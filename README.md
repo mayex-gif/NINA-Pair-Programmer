@@ -1,0 +1,1 @@
+\*\*Filosofía del Proyecto:\*\* Herramienta de \*Coworking\* (Pair Programming) 100% local y stateless. Diseñada específicamente para maximizar la velocidad de inferencia, proteger la caché (para hardware con restricciones de VRAM como una RTX 4060 con 8GB) y dotar a la IA de conocimiento total del contexto del proyecto sin arrastrar historiales de chat masivos.
