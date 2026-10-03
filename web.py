@@ -44,8 +44,6 @@ SVG_NINA = """
 </svg>
 """
 
-
-
 ss = st.session_state
 for clave, valor in {"resultado": None, "ruta": None, "msg": None, "pens": "", "metricas": None,
                      "proyecto": os.getcwd(), "campo_proyecto": os.getcwd(), "aviso": None, "guardado": False}.items():
@@ -98,9 +96,6 @@ def listar_archivos(raiz: str) -> list:
 
 
 # ----------------------------- Diff lado a lado ------------------------------- #
-
-
-
 
 def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
     todas = filas_alineadas(viejo, nuevo)
@@ -209,7 +204,6 @@ with st.sidebar:
                     st.rerun()
 
 # ---------------------------------- Principal --------------------------------- #
-# Reemplazamos st.title("Pair Programmer") con el nuevo título
 st.markdown(f"<h1>{SVG_NINA} NINA - Pair Programmer</h1>", unsafe_allow_html=True)
 st.caption("Local · stateless · cada pedido arranca de cero")
 if ss.msg:
@@ -303,7 +297,8 @@ if generar:
             ss.metricas = {"entrada": entrada, "salida": salida, "tps": tps, "seg": seg,
                            "exactas": reales, "intentos": res.intentos}
             ss.pens, ss.resultado, ss.ruta = ultimo_razonamiento["t"], res, ruta
-            if res.nuevo is None:
+            
+            if not res.es_valida:
                 estado.update(label="Sin cambio válido", state="error", expanded=False)
             else:
                 estado.update(label=f"Listo en {seg:.0f}s", state="complete", expanded=False)
@@ -324,32 +319,35 @@ if res is not None:
         if not m["exactas"]:
             st.caption("El servidor no informó el conteo de tokens: los valores con ~ son estimados.")
 
-    if res.nuevo is None:
+    cambio = res.cambios[0] if res.cambios else None
+
+    if not res.es_valida or not cambio:
         st.error("No se obtuvo un cambio válido. No se modificó nada.")
-        for e in res.errores:
+        errores = cambio.errores if cambio else ["No se generaron cambios."]
+        for e in errores:
             st.code(e, language=None)
         with st.expander("Respuesta del modelo"):
             st.code(res.respuesta or "(vacía)", language=None)
     else:
         st.markdown("### Cambios propuestos")
-        for aviso in res.avisos:
+        for aviso in cambio.avisos:
             st.warning(aviso)
-        recorte = aviso_recorte(res.original, res.nuevo)
+        recorte = aviso_recorte(cambio.original, cambio.nuevo)
         if recorte:
             st.error(recorte)
-        if res.nuevo == res.original:
+        if cambio.nuevo == cambio.original:
             st.info("La respuesta no produce cambios.")
         else:
-            a, b = renderizar_diff(res.original, res.nuevo, solo_cambios)
+            a, b = renderizar_diff(cambio.original, cambio.nuevo, solo_cambios)
             st.caption(f"`{P.clave(ss.ruta)}`   ·   +{a}  −{b}")
 
         b1, b2, _ = st.columns([1, 1, 5])
-        if b1.button("Aplicar y guardar", type="primary", disabled=(res.nuevo == res.original) or ss.guardado):
-            if archivo_cambio_en_disco(ss.ruta, res.original):
+        if b1.button("Aplicar y guardar", type="primary", disabled=(cambio.nuevo == cambio.original) or ss.guardado):
+            if archivo_cambio_en_disco(ss.ruta, cambio.original):
                 st.error("El archivo cambió en disco desde que se generó la propuesta. No se guardó nada: volvé a generar.")
             else:
                 backup = P.hacer_backup(ss.ruta)
-                escribir_archivo(ss.ruta, res.nuevo, res.eol)
+                escribir_archivo(ss.ruta, cambio.nuevo, cambio.eol)
                 ss.msg = f"{P.clave(ss.ruta)} guardado. Backup: {backup}"
                 ss.guardado = True  # Mantiene el diff en pantalla pero bloquea el botón
                 st.rerun()

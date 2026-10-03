@@ -147,18 +147,18 @@ def test_auto_healing_corrige_en_el_segundo_intento():
         return next(respuestas)
 
     res = cx.generar_cambio(_ctx(ORIG), llamar)
-    assert res.nuevo == "a = 1\nb = 20\nc = 3\n" and res.intentos == 2
+    assert res.cambios[0].nuevo == "a = 1\nb = 20\nc = 3\n" and res.intentos == 2
     assert largos == [2, 4]  # el reintento suma la respuesta fallida + el mensaje de error
 
 
 def test_auto_healing_se_rinde_tras_max_intentos():
     res = cx.generar_cambio(_ctx(ORIG), lambda m: bloque("zzz", "q"))
-    assert res.nuevo is None and res.intentos == config.MAX_INTENTOS and res.errores
+    assert not res.es_valida and res.intentos == config.MAX_INTENTOS and res.cambios[0].errores
 
 
 def test_respuesta_vacia_no_se_reintenta():
     res = cx.generar_cambio(_ctx(ORIG), lambda m: "")
-    assert res.nuevo is None and res.intentos == 1 and res.errores
+    assert not res.es_valida and res.intentos == 1 and res.cambios[0].errores
 
 
 # ----------------------------------------------------------------- mapa y relevancia

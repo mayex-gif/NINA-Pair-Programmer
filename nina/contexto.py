@@ -26,19 +26,14 @@ def _import_a_stem(imp: str) -> Optional[str]:
     imp = imp.strip().rstrip(";")
     if imp.endswith(".*"):
         return None
-    if "/" in imp:  # JS/TS: './components/UserCard.jsx'
+    if "/" in imp:  
         seg = imp.rstrip("/").split("/")[-1]
         return re.sub(r"\.(jsx?|tsx?|mjs)$", "", seg) or None
-    # Java 'com.x.UserService' | Python 'app.services.user' o relativo '.models'
     return imp.lstrip(".").split(".")[-1] or None
 
 
 def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
-    """
-    Rankea los archivos del mapa por relevancia para el archivo objetivo y arma un texto compacto.
-    Puntaje: lo que el objetivo importa (+5), lo que importa al objetivo (+4),
-    nombre mencionado en el prompt (+3), identificadores en común (hasta +3), misma carpeta (+1).
-    """
+    """Rankea los archivos del mapa por relevancia para el archivo objetivo y arma un texto compacto."""
     stem_obj = Path(clave_obj).stem
     dir_obj = Path(clave_obj).parent
     imports_obj = {_import_a_stem(i) for i in mapa.get(clave_obj, {}).get("imports", [])} - {None}
@@ -75,7 +70,7 @@ def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
 
 
 def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: str, mapa_txt: str):
-    sistema = SISTEMA_BASE  # parte estática primero: llama.cpp reutiliza este prefijo en su caché
+    sistema = SISTEMA_BASE  
     if convenciones:
         sistema += f"\n\n## Convenciones del proyecto (obligatorias)\n{convenciones}"
     if mapa_txt:
@@ -94,8 +89,8 @@ def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: 
 
 @dataclass
 class Contexto:
-    ruta: Path          # absoluta
-    clave: str          # relativa a la raíz del proyecto, con '/'
+    ruta: Path          
+    clave: str          
     original: str
     eol: str
     mensajes: list
@@ -105,15 +100,29 @@ class Contexto:
     hay_convenciones: bool
 
 
+# === NUEVOS MODELOS MULTI-ARCHIVO (FASE 0.3) ===
 @dataclass
-class Resultado:
+class CambioArchivo:
+    """Representa la propuesta de modificación para un único archivo del lote."""
+    clave: str
     original: str
     eol: str
-    nuevo: Optional[str] = None            # None = no se pudo obtener un cambio válido
+    nuevo: Optional[str] = None
     errores: list = field(default_factory=list)
     avisos: list = field(default_factory=list)
+
+@dataclass
+class Propuesta:
+    """El lote completo devuelto por el LLM. Reemplaza al antiguo 'Resultado'."""
+    cambios: list[CambioArchivo] = field(default_factory=list)
     intentos: int = 1
     respuesta: str = ""
+
+    @property
+    def es_valida(self) -> bool:
+        """True si hay cambios y todos los archivos del lote se parsearon sin errores."""
+        return bool(self.cambios) and all(c.nuevo is not None and not c.errores for c in self.cambios)
+# ===============================================
 
 
 def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool = False, extra: str = "") -> Contexto:
@@ -143,32 +152,45 @@ def generar_cambio(
     ctx: Contexto,
     llamar: Optional[Callable[[list], str]] = None,
     on_reintento: Optional[Callable[[int, list], None]] = None,
-) -> Resultado:
+) -> Propuesta:
     """
-    Pide el cambio al modelo y, si los bloques no se pueden aplicar, lo reintenta (auto-healing).
-    Cada intento se aplica siempre contra el ORIGINAL, y se le pide al modelo el set completo de bloques,
-    así un bloque bueno nunca se pierde por corregir otro. Todo ocurre dentro de esta llamada: sigue siendo stateless.
+    Genera una Propuesta (lote de cambios). 
+    En esta etapa de transición, devuelve siempre un lote con 1 solo archivo (ctx.clave).
     """
     llamar = llamar or stream_llm
-    mensajes = list(ctx.mensajes)  # copia: el historial del reintento no contamina el contexto original
-    res = Resultado(original=ctx.original, eol=ctx.eol)
+    mensajes = list(ctx.mensajes)  
+    propuesta = Propuesta()
+    
     for intento in range(1, MAX_INTENTOS + 1):
         respuesta = llamar(mensajes)
-        res.respuesta, res.intentos = respuesta, intento
-        if not respuesta.strip():  # reintentar el mismo prompt daría lo mismo
-            res.errores = ["El modelo no devolvió ninguna respuesta (¿agotó el contexto o los tokens mientras razonaba?)."]
-            return res
+        propuesta.respuesta = respuesta
+        propuesta.intentos = intento
+        
+        if not respuesta.strip():  
+            cambio_vacio = CambioArchivo(
+                clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
+                errores=["El modelo no devolvió ninguna respuesta (¿agotó el contexto o los tokens?)."]
+            )
+            propuesta.cambios = [cambio_vacio]
+            return propuesta
+            
         nuevo, errores, avisos = interpretar_respuesta(respuesta, ctx.original)
-        res.intentos, res.errores, res.avisos = intento, errores, avisos
-        if not errores:
-            res.nuevo = nuevo
-            return res
+        cambio_actual = CambioArchivo(
+            clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
+            nuevo=nuevo, errores=errores, avisos=avisos
+        )
+        propuesta.cambios = [cambio_actual]
+        
+        if propuesta.es_valida:
+            return propuesta
+            
         if intento < MAX_INTENTOS:
             if on_reintento:
                 on_reintento(intento, errores)
             mensajes.append({"role": "assistant", "content": respuesta})
             mensajes.append({"role": "user", "content": mensaje_reintento(errores)})
-    return res
+            
+    return propuesta
 
 
 def aviso_recorte(original: str, nuevo: str) -> Optional[str]:
