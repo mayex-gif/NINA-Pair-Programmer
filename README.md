@@ -11,11 +11,10 @@
 ## 📦 Instalación
 
 ```bash
-pip install watchdog httpx typer rich streamlit
-pip install tree-sitter tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python
-pip install pyperclip   # opcional, solo para `fix --portapapeles`
-pip install pytest      # desarrollo (Fase 0)
+pip install -r requirements.txt
 ```
+
+> `pytest` conviene moverlo a un `requirements-dev.txt`. `tree-sitter-html` está en la lista pero todavía sin uso: `generar_mapa.py` procesa `.html` por regex (se puede conectar luego en `_cargar_parsers`). `streamlit-tree-select` es para el árbol de la Fase 5.3.
 
 Si falta `tree-sitter` (o el paquete de un lenguaje), `generar_mapa.py` cae a regex **solo para ese lenguaje** y lo informa al iniciar. `.html` siempre va por regex.
 
@@ -148,13 +147,15 @@ Ordenada por impacto sobre lo que viene (multi-archivo, configuración, revisió
 4. **Escritura no atómica.** `escribir_archivo` abre con `"w"` (trunca primero): un corte a mitad de escritura deja el archivo roto. Para varios archivos se necesita además "todo o nada" entre archivos.
 5. **Backups con resolución de 1 segundo** (`%Y%m%d-%H%M%S`): dos aplicaciones en el mismo segundo se pisan, y `ultimo_backup` elige por orden alfabético. No hay lote ni manifiesto.
 6. **Sin validación posterior al cambio.** Un SEARCH/REPLACE válido puede dejar el archivo con errores de sintaxis; hoy solo se detecta si el archivo "se achica". Con tree-sitter ya instalado, `root_node.has_error` es un chequeo gratis para Java/JS/TS/Python. También cubre el caso del archivo vacío donde `interpretar_respuesta` acepta cualquier texto como contenido.
-7. **Configuración de servidor no persistente.** Los perfiles están fijos en el código; el panel "Servidor" permite editar URL/modelo pero no guarda, y "Probar conexión" lista modelos que **no se pueden elegir**. Faltan: API key (`Authorization`), campos del payload condicionales (`cache_prompt` puede ser rechazado por APIs en la nube) y parámetros por servidor.
+7. **Configuración de servidor no persistente.** Los perfiles están fijos en el código; el panel "Servidor" permite editar URL/modelo pero no guarda, y "Probar conexión" lista modelos que **no se pueden elegir**. Faltan: API key (`Authorization`), campos del payload condicionales (`cache_prompt` puede ser rechazado por APIs en la nube) y parámetros por servidor. Hoy `stream_llm` fija `temperature: 0.1` para cualquier modelo; para Qwen3.x en modo razonamiento la guía del fabricante apunta a 0.6 con `top_p 0.95` y `top_k 20` (ver Apéndice A).
 8. **Contexto de Ollama.** Por el endpoint `/v1` no se puede fijar `num_ctx`, y el contexto por defecto de Ollama suele ser chico (2048–4096 según versión y VRAM; verificalo con `ollama ps`). Prompts de ~12 000 tokens pueden recortarse **en silencio**. El perfil por defecto es Ollama. Hace falta un *driver* por tipo de servidor (ver Fase 0).
 9. **Ranking por nombre de archivo.** `_import_a_stem` reduce cada import a su último segmento (`index`, `App`, `utils`, `User` colisionan entre carpetas). El resolutor de `RepomapGraph.jsx` es bastante mejor (índice de sufijos, `index.*`, alias `@/`, imports relativos de Python, `<script src>`).
 10. **Constantes duplicadas y con deriva:** `EXTENSIONES` e `IGNORE_DIRS` existen en `generar_mapa.py` y en `web.py` con valores distintos (la web incluye `.css`, el Vigía no).
 11. **Mapa desactualizado tras aplicar.** La web no inicia el Vigía ni refresca el mapa después de guardar; si el Vigía no está corriendo, el siguiente pedido usa firmas viejas.
 12. **Lectura estricta en UTF-8.** Un archivo en otra codificación (típico en código Java viejo en Windows) levanta `UnicodeDecodeError` sin mensaje claro.
-13. **Menores:** línea duplicada `b1, b2, _ = st.columns(...)` en `web.py`; sin botón de cancelar generación en la web; `mostrar_diff` y `renderizar_diff` duplican la lógica de diff; el doc anterior estaba desactualizado (Python/HTML, auto-healing, web, perfiles).
+13. **Patrón de trazas incompleto.** Las URLs de Vite con `?t=<timestamp>` (`…/App.jsx?t=1723:20:11`) no coinciden con `PATRON_TRAZA`, así que `fix` no encuentra el archivo en trazas del navegador con HMR. Test `xfail` ya escrito.
+14. **Lógica no testeable** por estar dentro de comandos CLI o de `web.py` (ver 0.2).
+15. **Menores:** línea duplicada `b1, b2, _ = st.columns(...)` en `web.py`; sin botón de cancelar generación en la web; `mostrar_diff` y `renderizar_diff` duplican la lógica de diff; el doc anterior estaba desactualizado (Python/HTML, auto-healing, web, perfiles).
 
 ---
 
@@ -166,14 +167,14 @@ Objetivo: que multi-archivo, configuración y revisión por bloques se construya
 
 | # | Tarea | Resuelve |
 |---|---|---|
-| 0.1 | **Tests con pytest** de las funciones puras: `aplicar_bloques`, `interpretar_respuesta`, `filtrar_mapa`, parser de trazas, `extraer_archivo` (fixtures Java/JS/Py/HTML), y luego el resolutor de imports. | #3 |
-| 0.2 | **Separar el núcleo:** paquete `nina/` con `core` (sin UI), `cli.py` y `web.py` como consumidores finos. Introducir un objeto `Proyecto(raiz)` que concentre rutas del mapa, backups, convenciones y config; eliminar `os.chdir` y los `Path` globales. Una sola fuente para `EXTENSIONES` / `IGNORE_DIRS`. | #1 #2 #10 |
+| 0.1 | **Tests con pytest** de las funciones puras: `aplicar_bloques`, `interpretar_respuesta`, `filtrar_mapa`, parser de trazas, `extraer_archivo` (fixtures Java/JS/Py/HTML), y luego el resolutor de imports. **Estado: iniciada** — `tests/test_nucleo.py` (43 tests: 40 caracterizan lo que hoy funciona y 3 `xfail` marcan huecos conocidos). Falta lo que hoy no es testeable (ver 0.2). | #3 |
+| 0.2 | **Separar el núcleo:** paquete `nina/` con `core` (sin UI), `cli.py` y `web.py` como consumidores finos. Introducir un objeto `Proyecto(raiz)` que concentre rutas del mapa, backups, convenciones y config; eliminar `os.chdir` y los `Path` globales. Una sola fuente para `EXTENSIONES` / `IGNORE_DIRS`. Sacar a funciones puras lo que hoy no se puede testear: la extracción de frames del comando `fix` y las funciones de diff de `web.py` (el módulo levanta Streamlit al importarse). | #1 #2 #10 #14 |
 | 0.3 | **Modelo de datos multi-archivo:** `Propuesta` → lista de `CambioArchivo` (ruta, original o *nuevo archivo*, eol, texto nuevo, errores, avisos, bloques). CLI y web consumen lo mismo. Un archivo es el caso particular de un lote. | #1 |
 | 0.4 | **Configuración persistente + drivers por servidor** (ver 5.1): API key, payload según tipo de servidor, `num_ctx` y detección de recorte para Ollama. | #7 #8 |
 | 0.5 | **Escritura atómica** (archivo temporal + `os.replace`) y **backups por lote** con manifiesto (qué archivos, cuáles eran nuevos). `deshacer` revierte el lote completo, incluso eliminando archivos creados. Sello de tiempo con milisegundos o contador. | #4 #5 |
 | 0.6 | **Validación de sintaxis** del texto resultante con tree-sitter (`has_error`) antes de ofrecer *Aplicar*; advertir si el original estaba bien y el resultado no. | #6 |
 | 0.7 | **Seguridad de rutas:** toda ruta que venga del modelo se normaliza y debe quedar dentro de la raíz del proyecto, fuera de carpetas ignoradas y de `.git`, y con extensión permitida. Sin borrados ni renombrados en esta etapa. | (nuevo; imprescindible para 4.x) |
-| 0.8 | Lectura tolerante de codificación con mensaje claro; refresco del mapa tras aplicar (llamando a `extraer_archivo` de los archivos tocados); limpiar lo menor (#13). | #11 #12 #13 |
+| 0.8 | Lectura tolerante de codificación con mensaje claro; refresco del mapa tras aplicar (llamando a `extraer_archivo` de los archivos tocados); limpiar lo menor (#15); ampliar `PATRON_TRAZA` para `?t=…`. | #11 #12 #13 #15 |
 
 ### Fase 4 — Más potencia
 
@@ -252,7 +253,7 @@ Portar `resolverImports` de `RepomapGraph.jsx` a Python (módulo compartido del 
 
 * **Servidores / modelos:**
   * Lista de perfiles persistente (archivo de usuario, p. ej. `~/.nina/config.json`; las variables `AI_*` siguen pisando) con *agregar, editar, duplicar, borrar*.
-  * Cada perfil: nombre, **tipo** (Ollama, llama.cpp, LM Studio, Koboldcpp, API compatible con OpenAI), URL base, modelo, API key (opcional; mejor como nombre de variable de entorno que como texto), temperatura, contexto máximo.
+  * Cada perfil: nombre, **tipo** (Ollama, llama.cpp, LM Studio, Koboldcpp, API compatible con OpenAI), URL base, modelo, API key (opcional; mejor como nombre de variable de entorno que como texto), **muestreo** (temperatura, `top_p`, `top_k`, `presence_penalty`), interruptor **pensar sí/no** (`chat_template_kwargs.enable_thinking`) y contexto máximo.
   * **Probar conexión** y **cargar modelos**: la lista que devuelve `/v1/models` se muestra como desplegable para *elegir* el modelo (hoy solo se muestra como texto).
   * Indicador de estado (conectado / sin respuesta) en la cabecera.
 * **Proyecto:** carpeta, extensiones y carpetas ignoradas (una sola fuente compartida con el Vigía), comandos de validación por lenguaje (insumo de la Fase 6).
@@ -266,7 +267,7 @@ Un `st.popover` / par de desplegables (perfil + modelo) al lado del botón *Gene
 
 **5.3 Árbol de proyecto y grafo de dependencias (reemplaza `RepomapGraph.jsx`)**
 
-* **Árbol de carpetas** colapsable con casillas: alimenta la selección multi-archivo de 4.1 y marca archivos con cambios de Git, archivos propuestos por el plan (4.1-B) y archivos ya modificados en la propuesta actual.
+* **Árbol de carpetas** colapsable con casillas (`streamlit-tree-select`): alimenta la selección multi-archivo de 4.1 y marca archivos con cambios de Git, archivos propuestos por el plan (4.1-B) y archivos ya modificados en la propuesta actual.
 * **Grafo de dependencias de la vecindad** de los archivos elegidos (profundidad 1–2) con `st.graphviz_chart` (DOT, `rankdir=LR`; se renderiza en el navegador, sin instalar Graphviz). El grafo completo de un proyecto grande es ilegible; la vecindad sí sirve y además muestra qué contexto recibirá la IA.
 
 **5.4 Pantalla de revisión multi-archivo**
@@ -286,6 +287,32 @@ Tras aplicar los cambios, el script corre el comando de validación del proyecto
 
 **2. Reseteo suave y checklist**
 El plan se guarda en `.ai_todo.md` (`[ ] Crear DTO`, `[ ] Armar Controller`, `[ ] Actualizar UI`). El bucle toma la primera tarea sin marcar, filtra el contexto solo para esa tarea, ejecuta, valida y la tacha `[x]`. Al terminar cada micro-tarea se destruye la sesión y se arranca limpio con la siguiente, manteniendo la velocidad al 100 %. Cada micro-tarea genera su propio backup de lote, por lo que cualquiera se puede deshacer por separado.
+
+---
+
+## 🖥️ Apéndice A — llama-server para 8 GB de VRAM (a validar con tus métricas)
+
+Modelo MoE (35B totales, ~3B activos) en una RTX 4060 de 8 GB: no entra completo en VRAM. La estrategia recomendada es dejar **atención y KV en la GPU y los expertos en RAM**, en lugar de bajar `-ngl` y mandar capas enteras a la CPU.
+
+```bat
+@echo off
+title Llama Server - Qwen 35B
+cd /d "C:\llama-server"
+set MODEL_PATH=D:\LLMs\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+
+:: -ngl 999 + --cpu-moe : atención y KV en GPU, expertos MoE en RAM. Después probá --n-cpu-moe N (N más bajo = más expertos en GPU)
+:: -fit off             : con offload manual, evita que el autoajuste pise tu configuración
+:: -ctk/-ctv q8_0       : KV a 8 bits (~mitad de VRAM de contexto)
+C:\llama-server\llama-server.exe -m "%MODEL_PATH%" ^
+  -c 32768 -np 1 -ctk q8_0 -ctv q8_0 ^
+  -ngl 999 --cpu-moe -fit off ^
+  --jinja --port 8081
+pause
+```
+
+**Cómo afinarlo:** arrancá con `--cpu-moe`, mirá la memoria de GPU dedicada con el contexto cargado y reemplazalo por `--n-cpu-moe 30`, `25`, `20`… hasta quedar en ~7 GB usados (dejá margen: en Windows el driver puede desbordar a memoria compartida en vez de fallar, y la velocidad cae de golpe). Compará cada variante con las métricas de NINA (t/s y tiempo al primer token). Como NINA manda prompts de 3–12 mil tokens, el *prefill* pesa tanto como la generación: probá también `-ub 1024`.
+
+**Sampling y razonamiento (lado NINA):** la guía del modelo para razonamiento en tareas de código es temperatura 0.6, `top_p 0.95`, `top_k 20`; en modo sin razonamiento, 0.7 / 0.8 / 20. Para ediciones SEARCH/REPLACE conviene medir ambos modos (*pensar sí/no*, ver 5.1): sin razonamiento suele ser bastante más rápido.
 
 ---
 
@@ -311,26 +338,17 @@ El plan se guarda en `.ai_todo.md` (`[ ] Crear DTO`, `[ ] Armar Controller`, `[ 
 
 ## ✅ Checklist de pruebas manuales
 
-**Vigente**
+**Vigente** — leyenda: ✅ cubierto por test automático (`tests/test_nucleo.py`) · 📖 verificado solo leyendo el código (falta correrlo a mano) · ⚠️ con matiz
 
-* [x] **Pedir un cambio de una sola variable: el diff muestra únicamente esa línea.**
-(El sistema usa `difflib.unified_diff` en consola y la función `colapsar()` en la web para renderizar solo las líneas modificadas y ocultar el resto del archivo).
-* [x] **Pedir un cambio sin mencionar framework: respeta `CONVENTIONS.md`.**
-(La función `cargar_convenciones()` inyecta el contenido de ese markdown automáticamente en el prompt del sistema antes de enviar la solicitud).
-* [x] **Editar un `.jsx`: el mapa enviado no incluye firmas de Spring Boot irrelevantes.**
-(El sistema de puntos de `filtrar_mapa()` descarta archivos que no comparten `imports` o identificadores en común, por lo que el contexto se mantiene limpio).
-* [x] **Rechazar: el archivo queda intacto y no se crea backup.**
-(Si le das a "Descartar" en la web o a "N" en la consola, el script simplemente limpia el estado sin invocar a `hacer_backup()` ni tocar el disco).
-* [x] **Aceptar y luego `deshacer`: el archivo vuelve al estado anterior.**
-(Tanto el comando CLI `deshacer` como el botón "Restaurar este backup" en la interfaz web recuperan el `.bak` de la carpeta `.ai_backups/`).
-* [x] **Pegar un stack trace de Java, otro de Node y otro de Python: `fix` detecta el archivo correcto.**
-(Agregamos `PATRON_TRAZA` para Java/Node y `PATRON_TRAZA_PY` para Python en `frontend.py`, logrando aislar el archivo y la línea exacta del error en los tres ecosistemas).
-* [x] **Apagar el servidor del modelo: el error es claro, sin traceback.**
-(La excepción de red `httpx.ConnectError` se captura limpia y lanza un `ErrorLLM` personalizado que se imprime en texto rojo legible, sin colapsar la terminal).
-* [x] **Editar el archivo a mano mientras la IA responde: no se guarda nada y se avisa.**
-(Antes de guardar, la función `archivo_cambio_en_disco()` compara si el archivo actual sigue siendo idéntico al que se le mandó a la IA minutos atrás).
-* [x] **Archivo con cambios sin commitear: aparece la advertencia de Git.**
-(La función `git_archivo_sucio()` ejecuta `git status --porcelain` y bloquea la interfaz web o frena la consola hasta que tildás la confirmación de riesgo).
+* [x] ✅⚠️ Cambio de una sola variable: el diff cuenta `+1 −1`. *Matiz:* consola y web muestran además 3 líneas de contexto por lado, no "únicamente esa línea".
+* [x] 📖⚠️ Sin mencionar framework: `cargar_convenciones()` inyecta `CONVENTIONS.md` en el `system` (el orden estático → variable está testeado). *Matiz:* que el modelo las respete solo se comprueba a mano, y el archivo se busca en el directorio actual (deuda #1).
+* [x] ✅⚠️ Editar un `.jsx`: el mapa no trae firmas de Spring no relacionadas. *Matiz:* el ranking es heurístico; si la instrucción nombra algo del backend (p. ej. `findAll`, `Order`), esas firmas sí entran (hay un test que lo documenta).
+* [x] 📖 Rechazar: el archivo queda intacto y no se crea backup (lógica de UI/CLI, sin test).
+* [x] ✅⚠️ Aceptar y luego `deshacer`: ciclo backup → restauración testeado (el botón web, 📖). *Matiz:* dos aplicaciones en el mismo segundo se pisan (`xfail`, Fase 0.5).
+* [x] ✅⚠️ `fix` con trazas de Java, Node (ruta Windows), URL de navegador y Python: los patrones están testeados. *Matiz:* las URLs de Vite con `?t=<timestamp>` **no se detectan** (`xfail`), y la orquestación vive dentro del comando `fix`, todavía sin test.
+* [x] 📖 Apagar el servidor del modelo: `httpx.ConnectError` → `ErrorLLM` con mensaje claro (requiere prueba manual real).
+* [x] ✅ Editar el archivo a mano mientras la IA responde: `archivo_cambio_en_disco` testeado; no se guarda nada y se avisa.
+* [x] 📖 Archivo con cambios sin commitear: `git_archivo_sucio` + confirmación (CLI) / casilla que habilita *Generar* (web).
 
 **Nuevas (a medida que se implementen)**
 
@@ -343,3 +361,9 @@ El plan se guarda en `.ai_todo.md` (`[ ] Crear DTO`, `[ ] Armar Controller`, `[ 
 * [ ] Prompt grande con Ollama: se avisa si el servidor recortó el contexto.
 * [ ] Árbol: marcar 2 archivos alimenta el multi-archivo y el grafo muestra sus dependencias.
 
+
+MUCHO MAS ADELANTE
+- MOSTRAR GESTION DE TOKENS DEL CHAT CONTRA LO USADO, MEJOR SI LO CALCULA EN EL MOMENTO ____________  0 TOKENS--------32K TOKENS
+- PERMITIR USAR COMANDOS AL LLM PARA PROBAR FUNCIONALIDADES.
+- HACER QUE DEL ARBOL DE IMPORTACIONES SE USEN SOLAMENTE LAS IMPORTACIONES INMEDIATAS AL ARCHIVO SELECCIONADO Y LAS INMEDIATAS TAMBIEN AL RESTO DE ARCHIVOS EN MODIFICACION.
+- ESTARÍA BUENO HACER EL ARBOL INCLUSO MÁS GRANDE PARA QUE PUEDA TENER ATRIBUTOS Y METODOS O API Y SUS VERBOS HTTP O FUNCIONES SEGÚN CORRESPONDA?
