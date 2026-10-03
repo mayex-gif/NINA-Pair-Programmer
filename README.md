@@ -27,6 +27,9 @@ python frontend.py refactor "ruta/archivo.jsx" "Tu instrucción"
 python frontend.py fix "stack trace"   # o sin argumento (stdin) o -p (portapapeles)
 python frontend.py deshacer "ruta/archivo.jsx"
 python frontend.py probar              # prueba conexión y muestra cómo llega el razonamiento
+python -m nina refactor ...         # equivalente a frontend.py (el paquete nina/ es el núcleo)
+# todos los comandos del CLI aceptan --proyecto/-C <raíz>; las rutas relativas se leen desde esa raíz
+pytest -q                            # esperado: 60 passed, 3 xfailed (los 3 xfail marcan huecos conocidos)
 ```
 
 **Variables de entorno** (hoy; la Fase 5 las complementa con una configuración persistente):
@@ -47,14 +50,26 @@ python frontend.py probar              # prueba conexión y muestra cómo llega 
 
 | Archivo | Rol |
 |---|---|
-| `generar_mapa.py` | **El Vigía.** Escanea y vigila el proyecto; escribe `.ai_map.json` (firmas + imports). |
-| `frontend.py` | **El Ejecutor.** Contexto, llamada al LLM, interpretación de SEARCH/REPLACE, auto-healing, backups, git y CLI (typer). Es también el *núcleo* que importa `web.py`. |
-| `web.py` | Interfaz Streamlit: elegir proyecto y archivo, instrucción, diff lado a lado, métricas, razonamiento, deshacer. |
+| `generar_mapa.py`, `frontend.py` | Entradas de compatibilidad (3 líneas): delegan en `nina.vigia` y `nina.cli`. Los comandos de siempre siguen funcionando. |
+| `web.py` | Interfaz Streamlit (solo presentación). |
+| `nina/config.py` | Constantes y perfiles; **única fuente** de `EXTENSIONES_*` e `IGNORE_DIRS`. |
+| `nina/proyecto.py` | `Proyecto(raiz)`: rutas, mapa, convenciones, backups y Git; E/S de archivos preservando CRLF/LF. Reemplaza al `os.chdir`. |
+| `nina/contexto.py` | Ranking del mapa por relevancia, armado del prompt, `Contexto` / `Resultado`, auto-healing. |
+| `nina/bloques.py` | Parser y aplicador de SEARCH/REPLACE (funciones puras). |
+| `nina/llm.py` | Cliente por streaming del servidor del modelo. |
+| `nina/trazas.py` | Análisis de stack traces (archivo, línea y otros archivos del proyecto). |
+| `nina/diff.py` | Diff (funciones puras); la web y el CLI solo lo dibujan. |
+| `nina/mapa.py` | Extractores de firmas e imports (tree-sitter + regex) y escritura de `.ai_map.json`. |
+| `nina/vigia.py` | Watcher incremental (watchdog). |
+| `nina/cli.py` | CLI (typer + rich). |
+| `tests/` | `test_nucleo`, `test_modulos`, `test_cli`, `test_web_smoke` (este usa un Streamlit simulado, `fake_streamlit.py`). |
 | `.streamlit/config.toml` | Tema gris oscuro de la web. |
 | `RepomapGraph.jsx` | Visor de grafo (React Flow + dagre). **Se retira** (ver "Decisiones de diseño"); su resolutor de imports se porta a Python. |
 | `CONVENTIONS.md` *(opcional, en el proyecto)* | Reglas globales que se concatenan al mensaje `system`. |
 
-### 1. El Vigía (`generar_mapa.py`)
+**Regla de capas:** el núcleo (todo `nina/` salvo `cli.py` y `vigia.py`) no importa `typer`, `rich`, `streamlit` ni `watchdog`; un test lo vigila.
+
+### 1. El Vigía (`nina/mapa.py` + `nina/vigia.py`)
 
 * **tree-sitter** para Java, JS/JSX, TS/TSX y Python; HTML por regex (ids, `<script src>` y `<link href>`).
 * **Firmas completas** (anotaciones, genéricos, arrow functions, `React.memo`/`forwardRef`, interfaces, tipos TS, decoradores Python).
@@ -65,7 +80,7 @@ python frontend.py probar              # prueba conexión y muestra cómo llega 
 
 Formato (v2): `{"version": 2, "files": {"ruta": {"signatures": [...], "imports": [...]}}}`. El lector también acepta el v1 plano.
 
-### 2. El Ejecutor Stateless (`frontend.py`)
+### 2. El Ejecutor Stateless (`nina/contexto.py`, `bloques.py`, `llm.py`, `cli.py`)
 
 Cada ejecución arranca de cero. Flujo de `refactor` / `fix`:
 
@@ -110,6 +125,7 @@ Presupuesto: ~6000 caracteres, máx. 30 archivos. La consola/web muestra `mapa 4
 
 **Hecho y funcionando**
 
+* **Fase 0.1 y 0.2:** 63 tests (60 pasan, 3 `xfail`) y núcleo separado en el paquete `nina/` con `Proyecto(raiz)`, sin `os.chdir` ni rutas globales. Verificado: mismo mapa y mismos mensajes al modelo que antes del refactor.
 * Fase 1 y 2: backups + `deshacer`, diff visual, `CONVENTIONS.md`, formato SEARCH/REPLACE, escritura todo-o-nada.
 * Fase 3: filtrado del mapa por relevancia, `fix` auto-guiado.
 * **Adelantado de la antigua Fase 4:** reintento automático (auto-healing), aviso de Git por archivo sucio, protección contra cambios en disco durante la espera.
@@ -141,20 +157,20 @@ Presupuesto: ~6000 caracteres, máx. 30 archivos. La consola/web muestra `mapa 4
 
 Ordenada por impacto sobre lo que viene (multi-archivo, configuración, revisión por bloques).
 
-1. **Estado global de directorio.** `web.py` usa `os.chdir()` (afecta a todo el proceso, incluidas otras pestañas) y `frontend.py` define rutas relativas a nivel de módulo (`.ai_map.json`, `.ai_backups`, `CONVENTIONS.md`) y `clave_relativa` depende de `Path.cwd()`. Con varios archivos, esto se vuelve una fuente de errores sutiles.
-2. **Núcleo y CLI mezclados.** `frontend.py` contiene la lógica y a la vez importa `typer`/`rich`; la web importa el módulo del CLI. Además `PERFIL`, `API_URL` y `MODELO` se fijan al importar, por lo que cambiar de servidor en la web no llega al resto del código ni al CLI.
-3. **Cero tests**, y está a punto de cambiar el parser, el aplicador y el ranking. Sin red de seguridad, el refactor es a ciegas.
+1. ✅ *(resuelto en 0.2 con `Proyecto(raiz)`)* **Estado global de directorio.** `web.py` usa `os.chdir()` (afecta a todo el proceso, incluidas otras pestañas) y `frontend.py` define rutas relativas a nivel de módulo (`.ai_map.json`, `.ai_backups`, `CONVENTIONS.md`) y `clave_relativa` depende de `Path.cwd()`. Con varios archivos, esto se vuelve una fuente de errores sutiles.
+2. 🟡 *(parcial en 0.2: núcleo separado; los perfiles se resuelven en 0.4)* **Núcleo y CLI mezclados.** `frontend.py` contiene la lógica y a la vez importa `typer`/`rich`; la web importa el módulo del CLI. Además `PERFIL`, `API_URL` y `MODELO` se fijan al importar, por lo que cambiar de servidor en la web no llega al resto del código ni al CLI.
+3. 🟡 *(en curso: 63 tests, ver 0.1)* **Cero tests**, y está a punto de cambiar el parser, el aplicador y el ranking. Sin red de seguridad, el refactor es a ciegas.
 4. **Escritura no atómica.** `escribir_archivo` abre con `"w"` (trunca primero): un corte a mitad de escritura deja el archivo roto. Para varios archivos se necesita además "todo o nada" entre archivos.
 5. **Backups con resolución de 1 segundo** (`%Y%m%d-%H%M%S`): dos aplicaciones en el mismo segundo se pisan, y `ultimo_backup` elige por orden alfabético. No hay lote ni manifiesto.
 6. **Sin validación posterior al cambio.** Un SEARCH/REPLACE válido puede dejar el archivo con errores de sintaxis; hoy solo se detecta si el archivo "se achica". Con tree-sitter ya instalado, `root_node.has_error` es un chequeo gratis para Java/JS/TS/Python. También cubre el caso del archivo vacío donde `interpretar_respuesta` acepta cualquier texto como contenido.
 7. **Configuración de servidor no persistente.** Los perfiles están fijos en el código; el panel "Servidor" permite editar URL/modelo pero no guarda, y "Probar conexión" lista modelos que **no se pueden elegir**. Faltan: API key (`Authorization`), campos del payload condicionales (`cache_prompt` puede ser rechazado por APIs en la nube) y parámetros por servidor. Hoy `stream_llm` fija `temperature: 0.1` para cualquier modelo; para Qwen3.x en modo razonamiento la guía del fabricante apunta a 0.6 con `top_p 0.95` y `top_k 20` (ver Apéndice A).
 8. **Contexto de Ollama.** Por el endpoint `/v1` no se puede fijar `num_ctx`, y el contexto por defecto de Ollama suele ser chico (2048–4096 según versión y VRAM; verificalo con `ollama ps`). Prompts de ~12 000 tokens pueden recortarse **en silencio**. El perfil por defecto es Ollama. Hace falta un *driver* por tipo de servidor (ver Fase 0).
 9. **Ranking por nombre de archivo.** `_import_a_stem` reduce cada import a su último segmento (`index`, `App`, `utils`, `User` colisionan entre carpetas). El resolutor de `RepomapGraph.jsx` es bastante mejor (índice de sufijos, `index.*`, alias `@/`, imports relativos de Python, `<script src>`).
-10. **Constantes duplicadas y con deriva:** `EXTENSIONES` e `IGNORE_DIRS` existen en `generar_mapa.py` y en `web.py` con valores distintos (la web incluye `.css`, el Vigía no).
+10. ✅ *(resuelto en 0.2: todo en `nina/config.py`)* **Constantes duplicadas y con deriva:** `EXTENSIONES` e `IGNORE_DIRS` existen en `generar_mapa.py` y en `web.py` con valores distintos (la web incluye `.css`, el Vigía no).
 11. **Mapa desactualizado tras aplicar.** La web no inicia el Vigía ni refresca el mapa después de guardar; si el Vigía no está corriendo, el siguiente pedido usa firmas viejas.
 12. **Lectura estricta en UTF-8.** Un archivo en otra codificación (típico en código Java viejo en Windows) levanta `UnicodeDecodeError` sin mensaje claro.
 13. **Patrón de trazas incompleto.** Las URLs de Vite con `?t=<timestamp>` (`…/App.jsx?t=1723:20:11`) no coinciden con `PATRON_TRAZA`, así que `fix` no encuentra el archivo en trazas del navegador con HMR. Test `xfail` ya escrito.
-14. **Lógica no testeable** por estar dentro de comandos CLI o de `web.py` (ver 0.2).
+14. ✅ *(resuelto en 0.2)* **Lógica no testeable** por estar dentro de comandos CLI o de `web.py` (ver 0.2).
 15. **Menores:** línea duplicada `b1, b2, _ = st.columns(...)` en `web.py`; sin botón de cancelar generación en la web; `mostrar_diff` y `renderizar_diff` duplican la lógica de diff; el doc anterior estaba desactualizado (Python/HTML, auto-healing, web, perfiles).
 
 ---
@@ -167,8 +183,8 @@ Objetivo: que multi-archivo, configuración y revisión por bloques se construya
 
 | # | Tarea | Resuelve |
 |---|---|---|
-| 0.1 | **Tests con pytest** de las funciones puras: `aplicar_bloques`, `interpretar_respuesta`, `filtrar_mapa`, parser de trazas, `extraer_archivo` (fixtures Java/JS/Py/HTML), y luego el resolutor de imports. **Estado: iniciada** — `tests/test_nucleo.py` (43 tests: 40 caracterizan lo que hoy funciona y 3 `xfail` marcan huecos conocidos). Falta lo que hoy no es testeable (ver 0.2). | #3 |
-| 0.2 | **Separar el núcleo:** paquete `nina/` con `core` (sin UI), `cli.py` y `web.py` como consumidores finos. Introducir un objeto `Proyecto(raiz)` que concentre rutas del mapa, backups, convenciones y config; eliminar `os.chdir` y los `Path` globales. Una sola fuente para `EXTENSIONES` / `IGNORE_DIRS`. Sacar a funciones puras lo que hoy no se puede testear: la extracción de frames del comando `fix` y las funciones de diff de `web.py` (el módulo levanta Streamlit al importarse). | #1 #2 #10 #14 |
+| 0.1 | **Tests con pytest** de las funciones puras: `aplicar_bloques`, `interpretar_respuesta`, `filtrar_mapa`, parser de trazas, `extraer_archivo` (fixtures Java/JS/Py/HTML), y luego el resolutor de imports. **Estado: hecha** — 63 tests en `tests/` (60 pasan, 3 `xfail` marcan huecos conocidos), incluyendo los comandos del CLI de punta a punta y un smoke test de la web con Streamlit simulado. Pendiente: tests del resolutor de imports (con 4.5). | #3 |
+| 0.2 | **Separar el núcleo:** paquete `nina/` con `core` (sin UI), `cli.py` y `web.py` como consumidores finos. Introducir un objeto `Proyecto(raiz)` que concentre rutas del mapa, backups, convenciones y config; eliminar `os.chdir` y los `Path` globales. Una sola fuente para `EXTENSIONES` / `IGNORE_DIRS`. Sacar a funciones puras lo que hoy no se puede testear: la extracción de frames del comando `fix` y las funciones de diff de `web.py` (el módulo levanta Streamlit al importarse). **Estado: hecha** (los perfiles de servidor siguen leyéndose del entorno al importar `config.py`; se resuelven en 0.4). | #1 #2 #10 #14 |
 | 0.3 | **Modelo de datos multi-archivo:** `Propuesta` → lista de `CambioArchivo` (ruta, original o *nuevo archivo*, eol, texto nuevo, errores, avisos, bloques). CLI y web consumen lo mismo. Un archivo es el caso particular de un lote. | #1 |
 | 0.4 | **Configuración persistente + drivers por servidor** (ver 5.1): API key, payload según tipo de servidor, `num_ctx` y detección de recorte para Ollama. | #7 #8 |
 | 0.5 | **Escritura atómica** (archivo temporal + `os.replace`) y **backups por lote** con manifiesto (qué archivos, cuáles eran nuevos). `deshacer` revierte el lote completo, incluso eliminando archivos creados. Sello de tiempo con milisegundos o contador. | #4 #5 |
@@ -343,11 +359,11 @@ pause
 * [x] ✅⚠️ Cambio de una sola variable: el diff cuenta `+1 −1`. *Matiz:* consola y web muestran además 3 líneas de contexto por lado, no "únicamente esa línea".
 * [x] 📖⚠️ Sin mencionar framework: `cargar_convenciones()` inyecta `CONVENTIONS.md` en el `system` (el orden estático → variable está testeado). *Matiz:* que el modelo las respete solo se comprueba a mano, y el archivo se busca en el directorio actual (deuda #1).
 * [x] ✅⚠️ Editar un `.jsx`: el mapa no trae firmas de Spring no relacionadas. *Matiz:* el ranking es heurístico; si la instrucción nombra algo del backend (p. ej. `findAll`, `Order`), esas firmas sí entran (hay un test que lo documenta).
-* [x] 📖 Rechazar: el archivo queda intacto y no se crea backup (lógica de UI/CLI, sin test).
-* [x] ✅⚠️ Aceptar y luego `deshacer`: ciclo backup → restauración testeado (el botón web, 📖). *Matiz:* dos aplicaciones en el mismo segundo se pisan (`xfail`, Fase 0.5).
-* [x] ✅⚠️ `fix` con trazas de Java, Node (ruta Windows), URL de navegador y Python: los patrones están testeados. *Matiz:* las URLs de Vite con `?t=<timestamp>` **no se detectan** (`xfail`), y la orquestación vive dentro del comando `fix`, todavía sin test.
+* [x] ✅ Rechazar: el archivo queda intacto y no se crea backup (CLI testeado con confirmación simulada).
+* [x] ✅⚠️ Aceptar y luego `deshacer`: flujo completo testeado en el CLI y en la web (smoke test, incluido el botón *Restaurar*). *Matiz:* dos aplicaciones en el mismo segundo se pisan (`xfail`, Fase 0.5).
+* [x] ✅⚠️ `fix` con trazas de Java, Node (ruta Windows), URL de navegador y Python: patrones, selección del archivo/línea y comando `fix` de punta a punta testeados. *Matiz:* las URLs de Vite con `?t=<timestamp>` **no se detectan** (`xfail`, se corrige en 0.8).
 * [x] 📖 Apagar el servidor del modelo: `httpx.ConnectError` → `ErrorLLM` con mensaje claro (requiere prueba manual real).
-* [x] ✅ Editar el archivo a mano mientras la IA responde: `archivo_cambio_en_disco` testeado; no se guarda nada y se avisa.
+* [x] ✅ Editar el archivo a mano mientras la IA responde: no se guarda nada y se avisa (testeado en la web).
 * [x] 📖 Archivo con cambios sin commitear: `git_archivo_sucio` + confirmación (CLI) / casilla que habilita *Generar* (web).
 
 **Nuevas (a medida que se implementen)**
