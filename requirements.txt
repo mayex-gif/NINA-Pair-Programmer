@@ -1,0 +1,1 @@
+# Dependencias (typer, rich, streamlit, tree-sitter, etc.)

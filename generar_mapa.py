@@ -21,10 +21,11 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-EXTENSIONES = ('.java', '.ts', '.tsx', '.js', '.jsx')
+EXTENSIONES = ('.java', '.ts', '.tsx', '.js', '.jsx', '.py', '.html')
 IGNORE_DIRS = {
     '.git', 'node_modules', 'target', '.next', 'dist', 'build', 'out', 'coverage',
     '.idea', '.vscode', '__pycache__', '.ai_backups',
+    'venv', '.venv', 'site-packages', '.pytest_cache', '.mypy_cache', '.tox',  # entornos de Python
 }
 ARCHIVO_MAPA = ".ai_map.json"
 VERSION_MAPA = 2
@@ -33,24 +34,31 @@ MAX_LARGO_FIRMA = 220  # recorta firmas kilométricas (ej. anotaciones largas)
 # --------------------------------------------------------------------------- #
 # Parsers tree-sitter (opcionales)
 # --------------------------------------------------------------------------- #
-PARSERS = {}
-try:
-    from tree_sitter import Language, Parser
-    import tree_sitter_java
-    import tree_sitter_javascript
-    import tree_sitter_typescript
+def _cargar_parsers() -> dict:
+    """Un parser por extensión. Si falta el paquete de UN lenguaje, solo ese cae a regex (no todos)."""
+    parsers = {}
+    try:
+        from tree_sitter import Language, Parser
+    except Exception:
+        return parsers
 
-    _js = Language(tree_sitter_javascript.language())
-    PARSERS = {
-        '.java': Parser(Language(tree_sitter_java.language())),
-        '.js': Parser(_js),
-        '.jsx': Parser(_js),
-        '.ts': Parser(Language(tree_sitter_typescript.language_typescript())),
-        '.tsx': Parser(Language(tree_sitter_typescript.language_tsx())),
-    }
-except Exception:  # ImportError o cambios de API entre versiones
-    PARSERS = {}
+    def agregar(extensiones, modulo, funcion="language"):
+        try:
+            lenguaje = Language(getattr(__import__(modulo), funcion)())
+            for e in extensiones:
+                parsers[e] = Parser(lenguaje)
+        except Exception:
+            pass
 
+    agregar(('.java',), 'tree_sitter_java')
+    agregar(('.js', '.jsx'), 'tree_sitter_javascript')
+    agregar(('.ts',), 'tree_sitter_typescript', 'language_typescript')
+    agregar(('.tsx',), 'tree_sitter_typescript', 'language_tsx')
+    agregar(('.py',), 'tree_sitter_python')
+    return parsers  # .html siempre va por regex
+
+
+PARSERS = _cargar_parsers()
 USA_TREE_SITTER = bool(PARSERS)
 
 
@@ -168,11 +176,61 @@ def _extraer_js(raiz, src: bytes):
     return firmas, imports
 
 
+def _extraer_python(raiz, src: bytes):
+    firmas, imports = [], []
+
+    def nombre_de(n):
+        if n.type == 'aliased_import':
+            n = n.child_by_field_name('name') or n
+        return _txt(src, n.start_byte, n.end_byte)
+
+    def firma(defn, decoradores=''):
+        txt = _hasta_cuerpo(defn, src).rstrip()
+        if txt.endswith(':'):
+            txt = txt[:-1].rstrip()  # solo el ':' final: los type hints (a: int) se conservan
+        return _compactar((decoradores + ' ' + txt).strip())
+
+    def visitar(nodo, nivel):
+        sangria = '  ' * nivel
+        for hijo in nodo.children:
+            t = hijo.type
+            defn, decoradores = hijo, ''
+            if t == 'decorated_definition':  # @app.get("/x") def ... | @dataclass class ...
+                defn = hijo.child_by_field_name('definition')
+                decoradores = ' '.join(_compactar(_txt(src, d.start_byte, d.end_byte))
+                                       for d in hijo.children if d.type == 'decorator')
+                if defn is None:
+                    continue
+                t = defn.type
+            if t == 'import_statement':
+                for n in hijo.children:
+                    if n.type in ('dotted_name', 'aliased_import'):
+                        imports.append(nombre_de(n))
+            elif t == 'import_from_statement':
+                mod = hijo.child_by_field_name('module_name')
+                m = _txt(src, mod.start_byte, mod.end_byte) if mod else ''
+                imports.append(m)
+                for n in hijo.children_by_field_name('name'):
+                    imports.append(f"{m}.{nombre_de(n)}")  # from app.services import user -> app.services.user
+            elif t == 'class_definition':
+                firmas.append(sangria + firma(defn, decoradores))
+                cuerpo = defn.child_by_field_name('body')
+                if cuerpo:
+                    visitar(cuerpo, nivel + 1)  # métodos; no se baja a funciones anidadas
+            elif t == 'function_definition':
+                firmas.append(sangria + firma(defn, decoradores))
+
+    visitar(raiz, 0)
+    return firmas, imports
+
+
 def _extraer_tree_sitter(ruta: str, src: bytes):
     ext = os.path.splitext(ruta)[1]
     arbol = PARSERS[ext].parse(src)
     if ext == '.java':
         return _extraer_java(arbol.root_node, src)
+    if ext == '.py':
+        return _extraer_python(arbol.root_node, src)
     return _extraer_js(arbol.root_node, src)
 
 
@@ -182,16 +240,30 @@ def _extraer_tree_sitter(ruta: str, src: bytes):
 def _extraer_regex(ruta: str, src: bytes):
     texto = src.decode('utf-8', 'replace')
     firmas, imports = [], []
+
     if ruta.endswith('.java'):
         for c in re.findall(r'(?:class|interface|enum|record)\s+(\w+)', texto):
             firmas.append(f'class {c}')
         for m in re.findall(r'(?:public|private|protected)\s+[\w<>\[\],? ]+\s+(\w+)\s*\([^)]*\)', texto):
             firmas.append(f'  método {m}(…)')
         imports = re.findall(r'^\s*import\s+(?:static\s+)?([\w.*]+);', texto, re.M)
-    else:
+
+    elif ruta.endswith('.py'):
+        for c in re.findall(r'^[ \t]*((?:async\s+)?(?:class|def)\s+\w+[^\n]*?):\s*$', texto, re.M):
+            firmas.append(_compactar(c))
+        imports = [m.group(1) or m.group(2) for m in
+                   re.finditer(r'^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))', texto, re.M)]
+
+    elif ruta.endswith('.html'):
+        imports = re.findall(r'<(?:script|link)[^>]*(?:src|href)=[\'"]([^\'"]+)[\'"]', texto, re.I)
+        ids = re.findall(r'<[a-zA-Z1-6]+[^>]*\sid=[\'"]([^\'"]+)[\'"][^>]*>', texto, re.I)
+        firmas = [f"#{i}" for i in ids]  # los id principales: qué secciones existen
+
+    else:  # JS/TS
         for f in re.findall(r'(?:function|const|let|var)\s+(\w+)\s*(?:=\s*(?:async\s*)?)?\(', texto):
             firmas.append(f'{f}(…)')
         imports = re.findall(r'import\s+(?:[^\'"]+?\s+from\s+)?[\'"]([^\'"]+)[\'"]', texto)
+
     return firmas, imports
 
 
@@ -206,7 +278,7 @@ def extraer_archivo(ruta: str):
     except OSError:
         return None
     try:
-        if USA_TREE_SITTER:
+        if os.path.splitext(ruta)[1] in PARSERS:
             firmas, imports = _extraer_tree_sitter(ruta, src)
         else:
             firmas, imports = _extraer_regex(ruta, src)
@@ -316,7 +388,9 @@ def main():
     args = ap.parse_args()
 
     raiz = Path(args.raiz).resolve()
-    modo = "tree-sitter" if USA_TREE_SITTER else "regex (instalá tree-sitter para más precisión)"
+    activos = sorted(e.lstrip('.') for e in PARSERS)
+    faltan = sorted(e.lstrip('.') for e in EXTENSIONES if e not in PARSERS)
+    modo = f"tree-sitter [{', '.join(activos) or 'ninguno'}] + regex [{', '.join(faltan) or 'ninguno'}]"
     print(f"Escaneando {raiz} con {modo}...")
     archivos = escanear_todo(raiz)
     guardar_mapa(archivos, raiz)

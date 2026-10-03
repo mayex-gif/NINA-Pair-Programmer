@@ -1,0 +1,12 @@
+# Copiá esta carpeta .streamlit a la raíz desde donde lanzás `streamlit run web.py`
+# (o a ~/.streamlit para que valga en todos tus proyectos).
+[theme]
+base = "dark"
+primaryColor = "#7b8794"
+backgroundColor = "#1a1a1a"
+secondaryBackgroundColor = "#232323"
+textColor = "#d4d4d4"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

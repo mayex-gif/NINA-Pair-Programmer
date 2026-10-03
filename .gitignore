@@ -1,0 +1,10 @@
+.DOCs/
+.pruebas/
+.ai_map.json
+.ai_backups/
+__pycache__/
+.venv/
+venv/
+.DS_Store
+/DOCs
+/pruebas

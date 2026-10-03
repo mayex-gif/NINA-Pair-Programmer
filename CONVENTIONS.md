@@ -1,0 +1,1 @@
+# Reglas globales de tu código para la IA
