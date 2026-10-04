@@ -1,8 +1,9 @@
 """
 web.py — Interfaz Streamlit del motor.   Ejecutar:  streamlit run web.py
-Reutiliza el núcleo del paquete nina/ (contexto, LLM, auto-healing, git, backups): CLI y web se comportan igual.
+Reutiliza el núcleo de frontend.py (contexto, LLM, auto-healing, git, backups): CLI y web se comportan igual.
 Tema gris oscuro: copiá la carpeta .streamlit/ junto a este archivo (o a ~/.streamlit).
 """
+import difflib
 import html
 import os
 import time
@@ -11,14 +12,15 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from nina.config import (
-    API_URL, EXTENSIONES_EDITABLES, IGNORE_DIRS, MAX_INTENTOS, MAX_TOKENS_PROMPT, MODELO, PERFIL, gestor_config
+from frontend import (
+    API_URL, MAX_INTENTOS, MAX_TOKENS_PROMPT, MODELO, PERFIL, PERFILES, ErrorLLM,
+    archivo_cambio_en_disco, aviso_recorte, escribir_archivo, estimar_tokens, generar_cambio,
+    git_archivo_sucio, hacer_backup, leer_archivo, listar_modelos, preparar_contexto,
+    stream_llm, ultimo_backup,
 )
-from nina.contexto import aviso_recorte, estimar_tokens, generar_cambio, preparar_contexto
-from nina.diff import colapsar, filas_alineadas
-from nina.llm import ErrorLLM, listar_modelos, stream_llm
-from nina.proyecto import Proyecto, archivo_cambio_en_disco, escribir_archivo, leer_archivo
 
+EXTENSIONES = ('.java', '.ts', '.tsx', '.js', '.jsx', '.html', '.py', '.css')
+IGNORE_DIRS = {'node_modules', 'target', 'dist', 'build', 'out', 'coverage', 'venv', 'site-packages', '__pycache__'}
 ALTO_FILA = 20  # px; fijo para poder calcular el scroll al primer cambio
 
 st.set_page_config(page_title="NINA", page_icon="▪", layout="wide")
@@ -44,6 +46,8 @@ SVG_NINA = """
 </svg>
 """
 
+
+
 ss = st.session_state
 for clave, valor in {"resultado": None, "ruta": None, "msg": None, "pens": "", "metricas": None,
                      "proyecto": os.getcwd(), "campo_proyecto": os.getcwd(), "aviso": None, "guardado": False}.items():
@@ -57,6 +61,7 @@ def aplicar_proyecto(ruta_str: str):
         ss.aviso = f"No existe la carpeta: {ruta_str}"
         ss.campo_proyecto = ss.proyecto
         return
+    os.chdir(p)  # frontend.py trabaja con rutas relativas al directorio actual
     ss.proyecto = ss.campo_proyecto = str(p.resolve())
     ss.resultado, ss.archivo_sel, ss.aviso = None, None, None
 
@@ -90,12 +95,57 @@ def listar_archivos(raiz: str) -> list:
     for subdir, dirs, files in os.walk(raiz):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
         for f in files:
-            if f.endswith(EXTENSIONES_EDITABLES):
+            if f.endswith(EXTENSIONES):
                 salida.append(Path(subdir, f).relative_to(raiz).as_posix())
     return sorted(salida)
 
 
 # ----------------------------- Diff lado a lado ------------------------------- #
+def filas_alineadas(viejo: str, nuevo: str):
+    """Alinea fila por fila: ambos lados tienen siempre las mismas filas."""
+    a, b = viejo.split("\n"), nuevo.split("\n")
+    if a and a[-1] == "":
+        a.pop()
+    if b and b[-1] == "":
+        b.pop()
+    filas = []  # (num_izq, texto_izq, clase_izq, num_der, texto_der, clase_der)
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            for k in range(i2 - i1):
+                filas.append((i1 + k + 1, a[i1 + k], "", j1 + k + 1, b[j1 + k], ""))
+            continue
+        for k in range(max(i2 - i1, j2 - j1)):
+            i, j = i1 + k, j1 + k
+            ti, tj = i < i2, j < j2
+            filas.append((i + 1 if ti else None, a[i] if ti else "", "del" if ti else "vacio",
+                          j + 1 if tj else None, b[j] if tj else "", "add" if tj else "vacio"))
+    return filas
+
+
+def colapsar(filas: list, contexto: int = 3) -> list:
+    """Deja solo las zonas con cambios (± contexto líneas) y resume el resto."""
+    cambiadas = [i for i, f in enumerate(filas) if f[2] or f[5]]
+    visibles = set()
+    for i in cambiadas:
+        visibles.update(range(max(0, i - contexto), min(len(filas), i + contexto + 1)))
+    salida, omitidas = [], 0
+
+    def separador(n):
+        txt = f"⋯ {n} líneas sin cambios ⋯"
+        return (None, txt, "sep", None, txt, "sep")
+
+    for i, f in enumerate(filas):
+        if i in visibles:
+            if omitidas:
+                salida.append(separador(omitidas))
+                omitidas = 0
+            salida.append(f)
+        else:
+            omitidas += 1
+    if omitidas:
+        salida.append(separador(omitidas))
+    return salida
+
 
 def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
     todas = filas_alineadas(viejo, nuevo)
@@ -153,10 +203,6 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
     return agregadas, eliminadas
 
 
-# El proyecto activo se pasa explícitamente al núcleo (ya no se cambia el directorio del proceso).
-P = Proyecto(ss.proyecto)
-
-
 # ---------------------------------- Sidebar ----------------------------------- #
 with st.sidebar:
     st.markdown("### Proyecto")
@@ -165,59 +211,25 @@ with st.sidebar:
     if ss.aviso:
         st.warning(ss.aviso)
 
-    archivos = listar_archivos(str(P.raiz))
+    archivos = listar_archivos(os.getcwd())
     st.markdown("### Archivo")
     archivo_sel = st.selectbox("Archivo", archivos, index=None, key="archivo_sel",
                                placeholder="Escribí para buscar…", label_visibility="collapsed")
     st.caption(f"{len(archivos)} archivos de código")
 
     with st.expander("Servidor"):
-        nombres = list(gestor_config.config.get("perfiles", {}).keys())
-        idx = nombres.index(gestor_config.config.get("perfil_activo")) if gestor_config.config.get("perfil_activo") in nombres else 0
-        
-        # 1. Callback para guardar el perfil al cambiar el selectbox
-        def cambiar_perfil():
-            gestor_config.config["perfil_activo"] = st.session_state.selector_perfil
-            gestor_config.guardar()
-            
-        perfil_sel = st.selectbox("Perfil", nombres, index=idx, key="selector_perfil", on_change=cambiar_perfil)
-        datos_perfil = gestor_config.config.get("perfiles", {}).get(perfil_sel, {})
-        
-        # 2. Callback para guardar URL y API Key
-        def guardar_red():
-            gestor_config.config["perfiles"][perfil_sel]["url"] = st.session_state[f"url_{perfil_sel}"]
-            gestor_config.config["perfiles"][perfil_sel]["api_key"] = st.session_state[f"api_{perfil_sel}"]
-            gestor_config.guardar()
-
-        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de texto
-        url_actual = st.text_input("URL", datos_perfil.get("url", ""), key=f"url_{perfil_sel}", on_change=guardar_red)
-        api_key_actual = st.text_input("API Key", datos_perfil.get("api_key", ""), type="password", key=f"api_{perfil_sel}", on_change=guardar_red)
-        
-        # Listar modelos disponibles
-        try:
-            modelos_disp = listar_modelos(url_actual)
-        except Exception:
-            modelos_disp = []
-            
-        modelo_guardado = datos_perfil.get("modelo", "")
-        
-        # 3. Callback para guardar el modelo
-        def guardar_modelo():
-            gestor_config.config["perfiles"][perfil_sel]["modelo"] = st.session_state[f"mod_{perfil_sel}"]
-            gestor_config.guardar()
-
-        if modelos_disp:
-            idx_mod = modelos_disp.index(modelo_guardado) if modelo_guardado in modelos_disp else 0
-            st.selectbox("Modelo", modelos_disp, index=idx_mod, key=f"mod_{perfil_sel}", on_change=guardar_modelo)
-        else:
-            st.text_input("Modelo", modelo_guardado, key=f"mod_{perfil_sel}", on_change=guardar_modelo, help="No se pudo conectar para listar modelos.")
-            
+        nombres = list(PERFILES)
+        perfil = st.selectbox("Perfil", nombres, index=nombres.index(PERFIL))
+        url_def, modelo_def = (API_URL, MODELO) if perfil == PERFIL else PERFILES[perfil]
+        url = st.text_input("URL", url_def, key=f"url_{perfil}")
+        modelo = st.text_input("Modelo", modelo_def, key=f"modelo_{perfil}")
         if st.button("Probar conexión"):
-            if modelos_disp:
+            try:
+                modelos = listar_modelos(url)
                 st.success("Conectado")
-                st.caption(f"Modelos disponibles: {', '.join(modelos_disp)}")
-            else:
-                st.error("No hay respuesta del servidor o la API Key es inválida.")
+                st.caption(", ".join(modelos[:8]) or "El servidor no listó modelos.")
+            except ErrorLLM as e:
+                st.error(str(e))
 
     with st.expander("Opciones"):
         sin_mapa = st.checkbox("No enviar el mapa del proyecto")
@@ -225,19 +237,20 @@ with st.sidebar:
         solo_cambios = st.checkbox("Diff: solo zonas modificadas", value=True)
 
     if archivo_sel:
-        bk = P.ultimo_backup(archivo_sel)
+        bk = ultimo_backup(Path(archivo_sel))
         if bk:
             with st.expander("Deshacer"):
                 st.caption(f"Último backup: {bk.name}")
                 if st.button("Restaurar este backup"):
                     previo, _ = leer_archivo(bk)
-                    _, eol_actual = leer_archivo(P.abs(archivo_sel))
-                    P.hacer_backup(archivo_sel)  # el estado actual también queda respaldado
-                    escribir_archivo(P.abs(archivo_sel), previo, eol_actual)
+                    _, eol_actual = leer_archivo(Path(archivo_sel))
+                    hacer_backup(Path(archivo_sel))  # el estado actual también queda respaldado
+                    escribir_archivo(Path(archivo_sel), previo, eol_actual)
                     ss.msg, ss.resultado = f"Restaurado {archivo_sel} desde {bk.name}", None
                     st.rerun()
 
 # ---------------------------------- Principal --------------------------------- #
+# Reemplazamos st.title("Pair Programmer") con el nuevo título
 st.markdown(f"<h1>{SVG_NINA} NINA - Pair Programmer</h1>", unsafe_allow_html=True)
 st.caption("Local · stateless · cada pedido arranca de cero")
 if ss.msg:
@@ -247,10 +260,10 @@ if ss.msg:
 if not archivo_sel:
     st.info("Elegí un archivo en la barra lateral para empezar.")
     st.stop()
-ruta = P.abs(archivo_sel)
+ruta = Path(archivo_sel)
 
 forzar = True
-if P.git_archivo_sucio(ruta):
+if git_archivo_sucio(ruta):
     st.warning(f"`{archivo_sel}` tiene cambios sin commitear en Git: lo que haga la IA se va a mezclar con los tuyos.")
     forzar = st.checkbox("Entiendo el riesgo, modificar igual")
 
@@ -265,7 +278,7 @@ if generar:
     else:
         ss.guardado = False
         ss.resultado, ss.pens, ss.metricas = None, "", None
-        ctx = preparar_contexto(P, ruta, instruccion, sin_mapa)
+        ctx = preparar_contexto(ruta, instruccion, sin_mapa)
         st.caption(f"Contexto ~{ctx.tokens} tokens · mapa {ctx.mapa_usados}/{ctx.mapa_total} archivos · "
                    f"convenciones: {'sí' if ctx.hay_convenciones else 'no'}")
         if ctx.tokens > MAX_TOKENS_PROMPT:
@@ -305,8 +318,8 @@ if generar:
             z_pens.empty()
             z_resp.empty()
             try:
-                # Al no pasarle url ni modelo, stream_llm lee directamente el perfil activo guardado en config.json
-                return stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=todas_stats.append)
+                return stream_llm(mensajes, al_responder, al_pensar, url=url, modelo=modelo,
+                                  on_estadisticas=todas_stats.append)
             finally:  # último repintado sin throttle
                 if ver_pens and intento["pens"]:
                     pintar_pens(intento["pens"])
@@ -331,8 +344,7 @@ if generar:
             ss.metricas = {"entrada": entrada, "salida": salida, "tps": tps, "seg": seg,
                            "exactas": reales, "intentos": res.intentos}
             ss.pens, ss.resultado, ss.ruta = ultimo_razonamiento["t"], res, ruta
-            
-            if not res.es_valida:
+            if res.nuevo is None:
                 estado.update(label="Sin cambio válido", state="error", expanded=False)
             else:
                 estado.update(label=f"Listo en {seg:.0f}s", state="complete", expanded=False)
@@ -353,36 +365,34 @@ if res is not None:
         if not m["exactas"]:
             st.caption("El servidor no informó el conteo de tokens: los valores con ~ son estimados.")
 
-    cambio = res.cambios[0] if res.cambios else None
-
-    if not res.es_valida or not cambio:
+    if res.nuevo is None:
         st.error("No se obtuvo un cambio válido. No se modificó nada.")
-        errores = cambio.errores if cambio else ["No se generaron cambios."]
-        for e in errores:
+        for e in res.errores:
             st.code(e, language=None)
         with st.expander("Respuesta del modelo"):
             st.code(res.respuesta or "(vacía)", language=None)
     else:
         st.markdown("### Cambios propuestos")
-        for aviso in cambio.avisos:
+        for aviso in res.avisos:
             st.warning(aviso)
-        recorte = aviso_recorte(cambio.original, cambio.nuevo)
+        recorte = aviso_recorte(res.original, res.nuevo)
         if recorte:
             st.error(recorte)
-        if cambio.nuevo == cambio.original:
+        if res.nuevo == res.original:
             st.info("La respuesta no produce cambios.")
         else:
-            a, b = renderizar_diff(cambio.original, cambio.nuevo, solo_cambios)
-            st.caption(f"`{P.clave(ss.ruta)}`   ·   +{a}  −{b}")
+            a, b = renderizar_diff(res.original, res.nuevo, solo_cambios)
+            st.caption(f"`{ss.ruta}`   ·   +{a}  −{b}")
 
         b1, b2, _ = st.columns([1, 1, 5])
-        if b1.button("Aplicar y guardar", type="primary", disabled=(cambio.nuevo == cambio.original) or ss.guardado):
-            if archivo_cambio_en_disco(ss.ruta, cambio.original):
+        b1, b2, _ = st.columns([1, 1, 5])
+        if b1.button("Aplicar y guardar", type="primary", disabled=(res.nuevo == res.original) or ss.guardado):
+            if archivo_cambio_en_disco(ss.ruta, res.original):
                 st.error("El archivo cambió en disco desde que se generó la propuesta. No se guardó nada: volvé a generar.")
             else:
-                backup = P.hacer_backup(ss.ruta)
-                escribir_archivo(ss.ruta, cambio.nuevo, cambio.eol)
-                ss.msg = f"{P.clave(ss.ruta)} guardado. Backup: {backup}"
+                backup = hacer_backup(ss.ruta)
+                escribir_archivo(ss.ruta, res.nuevo, res.eol)
+                ss.msg = f"{ss.ruta} guardado. Backup: {backup}"
                 ss.guardado = True  # Mantiene el diff en pantalla pero bloquea el botón
                 st.rerun()
         if b2.button("Descartar"):
