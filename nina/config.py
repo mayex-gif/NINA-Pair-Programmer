@@ -3,10 +3,12 @@ Configuración y constantes compartidas (única fuente de verdad para el Vigía,
 No importa nada de UI ni de red.
 """
 import os
+import json
+from pathlib import Path
 
 # --- Archivos del proyecto -------------------------------------------------- #
-EXTENSIONES_MAPA = ('.java', '.ts', '.tsx', '.js', '.jsx', '.py', '.html')  # las que el Vigía indexa
-EXTENSIONES_EDITABLES = EXTENSIONES_MAPA + ('.css',)                         # las que se pueden elegir en la web
+EXTENSIONES_MAPA = ('.java', '.ts', '.tsx', '.js', '.jsx', '.py', '.html')
+EXTENSIONES_EDITABLES = EXTENSIONES_MAPA + ('.css',)
 IGNORE_DIRS = {
     '.git', 'node_modules', 'target', '.next', 'dist', 'build', 'out', 'coverage',
     '.idea', '.vscode', '__pycache__', '.ai_backups',
@@ -16,27 +18,12 @@ NOMBRE_MAPA = ".ai_map.json"
 NOMBRE_CONVENCIONES = "CONVENTIONS.md"
 NOMBRE_BACKUPS = ".ai_backups"
 VERSION_MAPA = 2
-MAX_LARGO_FIRMA = 220  # recorta firmas kilométricas (ej. anotaciones largas)
+MAX_LARGO_FIRMA = 220
 
-# --- Servidor del modelo ---------------------------------------------------- #
-# Perfiles: (URL, modelo). Puertos típicos: LM Studio = 1234 | llama.cpp = 8080/8081 | Koboldcpp = 5001 | Ollama = 11434
-# Elegí uno con AI_PERFIL, o pisalos con AI_API_URL / AI_MODELO.  (Fase 0.4: pasarán a una configuración persistente.)
-PERFILES = {
-    "ollama": ("http://localhost:11434/v1/chat/completions", "qwen3.6-coder:latest"),
-    "ollama-7b": ("http://localhost:11434/v1/chat/completions", "qwen2.5-coder:7b"),
-    "llama-server": ("http://localhost:8081/v1/chat/completions", "Qwen3.6-35B-A3B-UD-Q4_K_XL"),
-}
-PERFIL = os.getenv("AI_PERFIL", "ollama")
-if PERFIL not in PERFILES:
-    PERFIL = "ollama"
-API_URL = os.getenv("AI_API_URL", PERFILES[PERFIL][0])
-MODELO = os.getenv("AI_MODELO", PERFILES[PERFIL][1])
-MAX_TOKENS_PROMPT = int(os.getenv("AI_MAX_TOKENS_PROMPT", "12000"))  # aviso si se supera
-MAX_INTENTOS = int(os.getenv("AI_MAX_INTENTOS", "3"))  # auto-healing: intentos totales por pedido
-
-# --- Contexto --------------------------------------------------------------- #
-PRESUPUESTO_MAPA_CHARS = 6000  # tope de texto del mapa que se envía
+# --- Contexto y Sistema ----------------------------------------------------- #
+PRESUPUESTO_MAPA_CHARS = 6000
 MAX_ARCHIVOS_MAPA = 30
+MAX_INTENTOS = int(os.getenv("AI_MAX_INTENTOS", "3"))
 
 SISTEMA_BASE = """Sos un asistente de Pair Programming experto. Modificás UN archivo por vez.
 
@@ -58,3 +45,58 @@ Reglas:
 - Podés usar varios bloques, en el orden en que aparecen en el archivo.
 - No reescribas el archivo completo ni toques nada que no se haya pedido.
 - No uses bloques de Markdown (```)."""
+
+# --- Configuración Persistente (Fase 0.4) ----------------------------------- #
+CONFIG_DIR = Path.home() / ".nina"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+DEFAULT_CONFIG = {
+    "perfil_activo": "Ollama Local",
+    "perfiles": {
+        "Ollama Local": {
+            "tipo": "ollama",
+            "url": "http://localhost:11434/v1/chat/completions",
+            "modelo": "qwen2.5-coder:7b",
+            "max_tokens_prompt": 12000,
+            "temperatura": 0.1
+        },
+        "Llama Server": {
+            "tipo": "llama.cpp",
+            "url": "http://localhost:8081/v1/chat/completions",
+            "modelo": "Qwen3.6-35B-A3B-UD-Q4_K_XL",
+            "max_tokens_prompt": 12000,
+            "temperatura": 0.1
+        }
+    }
+}
+
+class GestorConfig:
+    def __init__(self):
+        self.config = self.cargar()
+
+    def cargar(self):
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return DEFAULT_CONFIG.copy()
+
+    def guardar(self):
+        CONFIG_DIR.mkdir(exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, indent=4)
+    
+    @property
+    def perfil_actual(self):
+        nombre = self.config.get("perfil_activo", "Ollama Local")
+        return self.config.get("perfiles", {}).get(nombre, DEFAULT_CONFIG["perfiles"]["Ollama Local"])
+
+gestor_config = GestorConfig()
+
+# Variables de compatibilidad temporal para no romper cli.py antes de tiempo
+API_URL = gestor_config.perfil_actual["url"]
+MODELO = gestor_config.perfil_actual["modelo"]
+PERFIL = gestor_config.config.get("perfil_activo", "Ollama Local")
+MAX_TOKENS_PROMPT = gestor_config.perfil_actual.get("max_tokens_prompt", 12000)

@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from nina.config import (
-    API_URL, EXTENSIONES_EDITABLES, IGNORE_DIRS, MAX_INTENTOS, MAX_TOKENS_PROMPT, MODELO, PERFIL, PERFILES,
+    API_URL, EXTENSIONES_EDITABLES, IGNORE_DIRS, MAX_INTENTOS, MAX_TOKENS_PROMPT, MODELO, PERFIL, gestor_config
 )
 from nina.contexto import aviso_recorte, estimar_tokens, generar_cambio, preparar_contexto
 from nina.diff import colapsar, filas_alineadas
@@ -172,18 +172,52 @@ with st.sidebar:
     st.caption(f"{len(archivos)} archivos de código")
 
     with st.expander("Servidor"):
-        nombres = list(PERFILES)
-        perfil = st.selectbox("Perfil", nombres, index=nombres.index(PERFIL))
-        url_def, modelo_def = (API_URL, MODELO) if perfil == PERFIL else PERFILES[perfil]
-        url = st.text_input("URL", url_def, key=f"url_{perfil}")
-        modelo = st.text_input("Modelo", modelo_def, key=f"modelo_{perfil}")
+        nombres = list(gestor_config.config.get("perfiles", {}).keys())
+        idx = nombres.index(gestor_config.config.get("perfil_activo")) if gestor_config.config.get("perfil_activo") in nombres else 0
+        
+        # 1. Callback para guardar el perfil al cambiar el selectbox
+        def cambiar_perfil():
+            gestor_config.config["perfil_activo"] = st.session_state.selector_perfil
+            gestor_config.guardar()
+            
+        perfil_sel = st.selectbox("Perfil", nombres, index=idx, key="selector_perfil", on_change=cambiar_perfil)
+        datos_perfil = gestor_config.config.get("perfiles", {}).get(perfil_sel, {})
+        
+        # 2. Callback para guardar URL y API Key
+        def guardar_red():
+            gestor_config.config["perfiles"][perfil_sel]["url"] = st.session_state[f"url_{perfil_sel}"]
+            gestor_config.config["perfiles"][perfil_sel]["api_key"] = st.session_state[f"api_{perfil_sel}"]
+            gestor_config.guardar()
+
+        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de texto
+        url_actual = st.text_input("URL", datos_perfil.get("url", ""), key=f"url_{perfil_sel}", on_change=guardar_red)
+        api_key_actual = st.text_input("API Key", datos_perfil.get("api_key", ""), type="password", key=f"api_{perfil_sel}", on_change=guardar_red)
+        
+        # Listar modelos disponibles
+        try:
+            modelos_disp = listar_modelos(url_actual)
+        except Exception:
+            modelos_disp = []
+            
+        modelo_guardado = datos_perfil.get("modelo", "")
+        
+        # 3. Callback para guardar el modelo
+        def guardar_modelo():
+            gestor_config.config["perfiles"][perfil_sel]["modelo"] = st.session_state[f"mod_{perfil_sel}"]
+            gestor_config.guardar()
+
+        if modelos_disp:
+            idx_mod = modelos_disp.index(modelo_guardado) if modelo_guardado in modelos_disp else 0
+            st.selectbox("Modelo", modelos_disp, index=idx_mod, key=f"mod_{perfil_sel}", on_change=guardar_modelo)
+        else:
+            st.text_input("Modelo", modelo_guardado, key=f"mod_{perfil_sel}", on_change=guardar_modelo, help="No se pudo conectar para listar modelos.")
+            
         if st.button("Probar conexión"):
-            try:
-                modelos = listar_modelos(url)
+            if modelos_disp:
                 st.success("Conectado")
-                st.caption(", ".join(modelos[:8]) or "El servidor no listó modelos.")
-            except ErrorLLM as e:
-                st.error(str(e))
+                st.caption(f"Modelos disponibles: {', '.join(modelos_disp)}")
+            else:
+                st.error("No hay respuesta del servidor o la API Key es inválida.")
 
     with st.expander("Opciones"):
         sin_mapa = st.checkbox("No enviar el mapa del proyecto")
@@ -271,8 +305,8 @@ if generar:
             z_pens.empty()
             z_resp.empty()
             try:
-                return stream_llm(mensajes, al_responder, al_pensar, url=url, modelo=modelo,
-                                  on_estadisticas=todas_stats.append)
+                # Al no pasarle url ni modelo, stream_llm lee directamente el perfil activo guardado en config.json
+                return stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=todas_stats.append)
             finally:  # último repintado sin throttle
                 if ver_pens and intento["pens"]:
                     pintar_pens(intento["pens"])
