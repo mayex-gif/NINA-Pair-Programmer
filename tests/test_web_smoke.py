@@ -60,7 +60,7 @@ def test_flujo_completo_de_la_web():
             ss["archivo_sel"] = "a.py"
             control.instruccion, control.clicks = "cambiá b", {"Generar"}
             assert _ejecutar(ss, control) == "fin"
-            assert ss.resultado.nuevo == "a = 1\nb = 20\nc = 3\n"
+            assert ss.resultado.cambios[0].nuevo == "a = 1\nb = 20\nc = 3\n"
             assert archivo.read_text(encoding="utf-8") == "a = 1\nb = 2\nc = 3\n"
             assert ss.ruta == archivo
 

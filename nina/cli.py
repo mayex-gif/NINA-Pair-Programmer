@@ -143,29 +143,35 @@ def ejecutar(proyecto: Proyecto, archivo: str, instruccion: str, sin_mapa: bool 
 
     res = generar_cambio(ctx, llamar_llm, al_reintentar)
     console.print()
-    for a in res.avisos:
-        console.print(f"[bold yellow]⚠️  {escape(a)}[/bold yellow]")
-    if res.nuevo is None:
-        for e in res.errores:
+    
+    cambio = res.cambios[0] if res.cambios else None
+
+    if cambio:
+        for a in cambio.avisos:
+            console.print(f"[bold yellow]⚠️  {escape(a)}[/bold yellow]")
+            
+    if not res.es_valida or not cambio:
+        errores = cambio.errores if cambio else ["El modelo no devolvió una respuesta válida."]
+        for e in errores:
             console.print(f"[bold red]✗ {escape(e)}[/bold red]")
         console.print("[bold red]❌ No se obtuvo un cambio válido. No se modificó nada; probá reformular la instrucción.[/bold red]")
         raise typer.Exit(1)
 
-    mas, menos = mostrar_diff(res.original, res.nuevo, ctx.clave)
+    mas, menos = mostrar_diff(cambio.original, cambio.nuevo, ctx.clave)
     if mas == 0 and menos == 0:
         console.print("[yellow]La respuesta no produce cambios.[/yellow]")
         return
     console.print(f"[green]+{mas}[/green] [red]-{menos}[/red]")
-    recorte = aviso_recorte(res.original, res.nuevo)
+    recorte = aviso_recorte(cambio.original, cambio.nuevo)
     if recorte:
         console.print(f"[bold red]{recorte}[/bold red]")
 
     if typer.confirm("\n¿Aplicar estos cambios?", default=False):
-        if archivo_cambio_en_disco(ruta, res.original):
+        if archivo_cambio_en_disco(ruta, cambio.original):
             console.print("[bold red]El archivo cambió en disco mientras esperabas. No se guardó nada; volvé a ejecutar.[/bold red]")
             raise typer.Exit(1)
         backup = proyecto.hacer_backup(ruta)
-        escribir_archivo(ruta, res.nuevo, res.eol)
+        escribir_archivo(ruta, cambio.nuevo, cambio.eol)
         console.print(
             f"[bold green]✅ {escape(archivo)} guardado.[/bold green] "
             f"[dim]Backup: {escape(str(backup))}  ·  Revertir: frontend.py deshacer \"{escape(archivo)}\"[/dim]"
