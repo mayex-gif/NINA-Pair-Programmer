@@ -395,3 +395,10 @@ def test_escanear_y_guardar_mapa_de_forma_atomica():
         datos = json.loads((d / ".ai_map.json").read_text(encoding="utf-8"))
         assert datos["version"] == 2 and list(datos["files"]) == ["src/a.js"]
         assert not list(d.glob("*.tmp"))
+
+def test_detector_de_errores_de_sintaxis():
+    from nina.mapa import tiene_errores_sintaxis
+    codigo_ok = "def suma(a, b):\n    return a + b\n"
+    codigo_roto = "def suma(a, b\n    return a + b\n"  # falta '):'
+    assert tiene_errores_sintaxis(codigo_ok, "test.py") is False
+    assert tiene_errores_sintaxis(codigo_roto, "test.py") is True

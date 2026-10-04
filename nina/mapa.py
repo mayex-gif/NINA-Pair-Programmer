@@ -291,3 +291,19 @@ def guardar_mapa(archivos: dict, raiz: Path):
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump({'version': VERSION_MAPA, 'files': archivos}, f, indent=1, ensure_ascii=False)
     os.replace(tmp, destino)
+
+
+# === NUEVA FUNCIÓN (FASE 0.6) ===
+def tiene_errores_sintaxis(codigo: str, ruta: str) -> bool:
+    """
+    Devuelve True si el código tiene errores de sintaxis (según tree-sitter).
+    Si el parser no está disponible para la extensión, devuelve False.
+    """
+    ext = os.path.splitext(ruta)[1]
+    if ext not in PARSERS:
+        return False
+    try:
+        arbol = PARSERS[ext].parse(codigo.encode('utf-8', 'replace'))
+        return arbol.root_node.has_error
+    except Exception:
+        return False

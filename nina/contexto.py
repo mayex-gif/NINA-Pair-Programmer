@@ -10,6 +10,7 @@ from typing import Callable, Optional
 from .bloques import interpretar_respuesta
 from .config import MAX_ARCHIVOS_MAPA, MAX_INTENTOS, PRESUPUESTO_MAPA_CHARS, SISTEMA_BASE
 from .llm import stream_llm
+from .mapa import tiene_errores_sintaxis
 from .proyecto import Proyecto, leer_archivo
 
 
@@ -175,6 +176,13 @@ def generar_cambio(
             return propuesta
             
         nuevo, errores, avisos = interpretar_respuesta(respuesta, ctx.original)
+
+        # --- FASE 0.6: Validación de sintaxis ---
+        if nuevo is not None:
+            if not tiene_errores_sintaxis(ctx.original, ctx.clave) and tiene_errores_sintaxis(nuevo, ctx.clave):
+                avisos.append("🚨 Advertencia de sintaxis: el código generado contiene errores estructurales (llaves sin cerrar, indentación rota, etc).")
+        # ----------------------------------------
+
         cambio_actual = CambioArchivo(
             clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
             nuevo=nuevo, errores=errores, avisos=avisos
