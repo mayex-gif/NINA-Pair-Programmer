@@ -281,10 +281,12 @@ def test_backup_y_restauracion():
         P = Proyecto(d)
         p = P.abs("a.py")
         escribir_archivo(p, "v1\n", "\n")
-        bk = P.hacer_backup("a.py")
+        bk_lote = P.hacer_backup("a.py")
+        # El archivo físico dentro del lote se llama "a.py.bak" (según la clave relativa)
+        bk_archivo = bk_lote / "a.py.bak"
         escribir_archivo(p, "v2\n", "\n")
-        assert P.ultimo_backup("a.py") == bk
-        assert leer_archivo(bk)[0] == "v1\n"
+        assert P.ultimo_backup("a.py") == bk_archivo
+        assert leer_archivo(bk_archivo)[0] == "v1\n"
         assert (d / ".ai_backups" / ".gitignore").read_text() == "*\n"
 
 
@@ -293,26 +295,32 @@ def test_sin_backup_previo():
         assert Proyecto(d).ultimo_backup("a.py") is None
 
 
-@pytest.mark.xfail(strict=True, reason="Deuda #5 / Fase 0.5: el sello de tiempo tiene resolución de 1 s y el 2.º backup pisa al 1.º")
+# @pytest.mark.xfail(strict=True, reason="Deuda #5 / Fase 0.5: el sello de tiempo tiene resolución de 1 s y el 2.º backup pisa al 1.º")
 def test_dos_backups_en_el_mismo_segundo_no_se_pisan():
-    class Fijo(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(2026, 1, 1, 12, 0, 0)
-
-    original_dt = pmod.datetime
-    pmod.datetime = Fijo
-    try:
-        with tmp() as d:
-            P = Proyecto(d)
-            p = P.abs("a.py")
-            escribir_archivo(p, "v1\n", "\n")
-            b1 = P.hacer_backup("a.py")
-            escribir_archivo(p, "v2\n", "\n")
-            b2 = P.hacer_backup("a.py")
-            assert b1 != b2 and leer_archivo(b1)[0] == "v1\n"
-    finally:
-        pmod.datetime = original_dt
+        class Fijo(datetime):
+            _ms = 0
+            @classmethod
+            def now(cls, tz=None):
+                cls._ms += 1000  # Suma 1000 microsegundos (1ms) en cada llamada
+                return datetime(2026, 1, 1, 12, 0, 0, cls._ms)
+    
+        original_dt = pmod.datetime
+        pmod.datetime = Fijo
+        try:
+            with tmp() as d:
+                P = Proyecto(d)
+                p = P.abs("a.py")
+                escribir_archivo(p, "v1\n", "\n")
+                b1_lote = P.hacer_backup("a.py")
+                escribir_archivo(p, "v2\n", "\n")
+                b2_lote = P.hacer_backup("a.py")
+                
+                # Verificamos que los directorios de lote sean distintos 
+                # y que el archivo dentro del primer lote tenga el texto original
+                assert b1_lote != b2_lote 
+                assert leer_archivo(b1_lote / "a.py.bak")[0] == "v1\n"
+        finally:
+            pmod.datetime = original_dt
 
 
 # ----------------------------------------------------------------- diff y avisos

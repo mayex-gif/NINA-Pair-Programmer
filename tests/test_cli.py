@@ -44,7 +44,7 @@ def test_refactor_aplica_con_backup_y_deshacer_lo_revierte():
         with Simulacion(confirma=True):
             cli.refactor("a.py", "cambiá b", False, str(raiz))
             assert (raiz / "a.py").read_text(encoding="utf-8") == "a = 1\nb = 20\nc = 3\n"
-            assert len(list((raiz / ".ai_backups").glob("*.bak"))) == 1
+            assert len(list((raiz / ".ai_backups").rglob("*.bak"))) == 1
             cli.deshacer("a.py", str(raiz))
             assert (raiz / "a.py").read_text(encoding="utf-8") == ORIGINAL
     assert os.getcwd() == cwd
