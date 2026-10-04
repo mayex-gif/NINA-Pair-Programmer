@@ -106,45 +106,36 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 ## 🧱 Deuda técnica detectada (arreglar antes de crecer)
 
- 1. ✅ *(resuelto en 0.2)* **Estado global de directorio.**
+1. ✅ *(resuelto en 0.2)* **Estado global de directorio.** 
+2. ✅ *(resuelto en 0.4)* **Núcleo y CLI mezclados.**
+3. ✅ *(resuelto en 0.1)* **Cero tests.**
+4. ✅ *(resuelto en 0.5)* **Escritura no atómica.** Archivos temporales y `os.replace` implementados.
+5. ✅ *(resuelto en 0.5)* **Backups con resolución de 1 segundo.** Lotes transaccionales con milisegundos y manifiesto JSON.
+6. ✅ *(resuelto en 0.6)* **Sin validación posterior al cambio.** `tree-sitter` valida la sintaxis antes de guardar.
+7. ✅ *(resuelto en 0.4)* **Configuración de servidor no persistente.**
+8. ✅ *(resuelto en 0.4)* **Contexto de Ollama recortado.**
+9. **Ranking por nombre de archivo.** `_import_a_stem` colisiona (`index`, `utils`). Requiere el resolutor avanzado de dependencias (Fase 4.5).
+10. ✅ *(resuelto en 0.2)* **Constantes duplicadas.** 
+11. ✅ *(resuelto en 0.8)* **Mapa desactualizado tras aplicar.** Se actualiza atómicamente el mapa en disco al instante.
+12. ✅ *(resuelto en 0.8)* **Lectura estricta en UTF-8.** Fallback automático a `latin-1` implementado.
+13. ✅ *(resuelto en 0.8)* **Patrón de trazas incompleto.** Expresión regular ajustada para ignorar timestamps de Vite (`?t=...`).
 
- 2. ✅ *(resuelto en 0.4)* **Núcleo y CLI mezclados.**
-
- 3. ✅ *(resuelto en 0.1)* **Cero tests.**
-
- 4. **Escritura no atómica.** `escribir_archivo` abre con `"w"` (trunca primero). Para varios archivos se necesita "todo o nada" entre archivos.
-
- 5. **Backups con resolución de 1 segundo** (`%Y%m%d-%H%M%S`). Dos aplicaciones rápidas se pisan.
-
- 6. **Sin validación posterior al cambio.** `root_node.has_error` de tree-sitter debe chequear sintaxis gratis antes de guardar.
-
- 7. ✅ *(resuelto en 0.4)* **Configuración de servidor no persistente.**
-
- 8. ✅ *(resuelto en 0.4)* **Contexto de Ollama recortado.**
-
- 9. **Ranking por nombre de archivo.** `_import_a_stem` colisiona (`index`, `utils`). Requiere el resolutor avanzado de dependencias.
-
-10. ✅ *(resuelto en 0.2)* **Constantes duplicadas.**
-
-11. **Mapa desactualizado tras aplicar.** La web no refresca automáticamente las firmas del archivo editado.
-
-12. **Lectura estricta en UTF-8.** Falla silenciosa con otras codificaciones.
-
-13. **Patrón de trazas incompleto.** URLs de Vite con `?t=<timestamp>` fallan.
+---
 
 ## 🗺 ROADMAP
 
-### Fase 0 — Cimientos (antes de cualquier función nueva)
+### Fase 0 — Cimientos (Completada ✅)
 
-| **#** | **Tarea** | **Resuelve** | 
-| 0.1 | **Tests con pytest** de las funciones puras y comandos. **Estado: Hecha**. | #3 | 
-| 0.2 | **Separar el núcleo:** paquete `nina/`, clase `Proyecto(raiz)`. **Estado: Hecha**. | #1, #2, #10 | 
-| 0.3 | **Modelo de datos multi-archivo:** `Propuesta` -> lista de `CambioArchivo`. **Estado: Hecha**. | Bloqueo core | 
-| 0.4 | **Configuración persistente + drivers:** UI conectada a `config.json`, APIs dinámicas. **Estado: Hecha**. | #7, #8 | 
-| 0.5 | **Escritura atómica** (`os.replace`) y **backups por lote** con manifiesto. `deshacer` revierte el lote completo. Sello de tiempo con milisegundos. | #4, #5 | 
-| 0.6 | **Validación de sintaxis** del texto resultante con tree-sitter (`has_error`) antes de ofrecer *Aplicar*. | #6 | 
-| 0.7 | **Seguridad de rutas:** normalización para mantener creaciones/ediciones dentro del scope permitido. | Core security | 
-| 0.8 | Lectura tolerante de codificación; refresco del mapa tras aplicar; ampliar `PATRON_TRAZA` para Vite. | #11, #12, #13 | 
+| # | Tarea | Resuelve |
+|---|---|---|
+| 0.1 | **Tests con pytest** de las funciones puras y comandos. **Estado: Hecha**. | #3 |
+| 0.2 | **Separar el núcleo:** paquete `nina/`, clase `Proyecto(raiz)`. **Estado: Hecha**. | #1, #2, #10 |
+| 0.3 | **Modelo de datos multi-archivo:** `Propuesta` -> lista de `CambioArchivo`. **Estado: Hecha**. | Bloqueo core |
+| 0.4 | **Configuración persistente + drivers:** UI conectada a `config.json`, APIs dinámicas. **Estado: Hecha**. | #7, #8 |
+| 0.5 | **Escritura atómica** (`os.replace`) y **backups por lote** con manifiesto. **Estado: Hecha**. | #4, #5 |
+| 0.6 | **Validación de sintaxis** del texto resultante con tree-sitter (`has_error`). **Estado: Hecha**. | #6 |
+| 0.7 | **Seguridad de rutas:** normalización contra Path Traversal y carpetas restringidas. **Estado: Hecha**. | Core security |
+| 0.8 | Lectura tolerante de codificación; refresco del mapa; patrón de Vite. **Estado: Hecha**. | #11, #12, #13 |
 
 ### Fase 4 — Más potencia
 
