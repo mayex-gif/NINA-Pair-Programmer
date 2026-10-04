@@ -236,7 +236,7 @@ def test_traza_url_de_navegador():
     assert tz.PATRON_TRAZA.findall(BROWSER)[0][1] == "20"
 
 
-@pytest.mark.xfail(strict=True, reason="Vite agrega ?t=<timestamp> a las URLs de HMR y el patrón actual no lo contempla")
+# @pytest.mark.xfail(strict=True, reason="Vite agrega ?t=<timestamp> a las URLs de HMR y el patrón actual no lo contempla")
 def test_traza_url_de_navegador_con_query_de_vite():
     assert tz.PATRON_TRAZA.findall(BROWSER_VITE)[0][1] == "20"
 

@@ -17,9 +17,14 @@ from .config import NOMBRE_BACKUPS, NOMBRE_CONVENCIONES, NOMBRE_MAPA, EXTENSIONE
 
 # ------------------------------ E/S de archivos (no dependen del proyecto) ----- #
 def leer_archivo(ruta: Path):
-    """Lee preservando el tipo de salto de línea (CRLF/LF) para no ensuciar el diff de git."""
-    with open(ruta, "r", encoding="utf-8", newline="") as f:
-        crudo = f.read()
+    """Lee preservando el tipo de salto de línea. Fallback tolerante si no es UTF-8 (Fase 0.8)."""
+    try:
+        with open(ruta, "r", encoding="utf-8", newline="") as f:
+            crudo = f.read()
+    except UnicodeDecodeError:
+        with open(ruta, "r", encoding="latin-1", newline="") as f:
+            crudo = f.read()
+            
     eol = "\r\n" if "\r\n" in crudo else "\n"
     return crudo.replace("\r\n", "\n"), eol
 
@@ -82,23 +87,19 @@ class Proyecto:
     def validar_ruta_segura(self, ruta: Union[str, Path]) -> Path:
         """
         Garantiza que la ruta generada por la IA no escape del proyecto ni toque archivos sensibles.
-        Lanza ValueError si la ruta es inválida. Devuelve el Path absoluto seguro.
         """
         p = self.abs(ruta).resolve()
         
-        # 1. Prevenir Path Traversal (debe estar dentro de self.raiz)
         try:
             relativa = p.relative_to(self.raiz)
         except ValueError:
             raise ValueError(f"Ruta prohibida (intento de escape del directorio raíz): {ruta}")
             
-        # 2. Proteger carpetas internas/del sistema
         partes = relativa.parts
         for ignorada in IGNORE_DIRS:
             if ignorada in partes:
                 raise ValueError(f"Ruta prohibida (intento de escritura en carpeta restringida '{ignorada}'): {ruta}")
                 
-        # 3. Validar extensión permitida
         if p.suffix not in EXTENSIONES_EDITABLES:
             raise ValueError(f"Extensión no permitida para edición ({p.suffix}). Permitidas: {', '.join(EXTENSIONES_EDITABLES)}")
             
@@ -189,3 +190,19 @@ class Proyecto:
             ruta: {"signatures": [s] if isinstance(s, str) else list(s), "imports": []}
             for ruta, s in datos.items()
         }
+
+    def actualizar_archivo_en_mapa(self, ruta: Union[str, Path]):
+        """Extrae firmas e imports del archivo y actualiza el JSON del mapa atómicamente (Fase 0.8)."""
+        from .mapa import extraer_archivo, guardar_mapa
+        
+        mapa_actual = self.cargar_mapa()
+        ruta_abs = self.abs(ruta)
+        clave = self.clave(ruta)
+        
+        datos = extraer_archivo(str(ruta_abs))
+        if datos:
+            mapa_actual[clave] = datos
+        elif clave in mapa_actual:
+            del mapa_actual[clave]
+            
+        guardar_mapa(mapa_actual, self.raiz)
