@@ -68,7 +68,7 @@ def test_flujo_completo_de_la_web():
             control.clicks = {"Aplicar y guardar"}
             assert _ejecutar(ss, control) == "rerun"
             assert archivo.read_text(encoding="utf-8") == "a = 1\nb = 20\nc = 3\n"
-            assert len(list((raiz / ".ai_backups").glob("*.bak"))) == 1 and ss.guardado is True
+            assert len(list((raiz / ".ai_backups").rglob("*.bak"))) == 1 and ss.guardado is True
 
             # 4) tras el rerun se muestra el mensaje de guardado
             control.clicks, control.log = set(), []

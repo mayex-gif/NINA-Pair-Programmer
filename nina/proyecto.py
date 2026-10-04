@@ -4,11 +4,13 @@ Reemplaza al estado global (`os.chdir` + rutas relativas a nivel de módulo): ca
 así la web puede tener varios a la vez y nada depende del directorio actual del proceso.
 """
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from .config import NOMBRE_BACKUPS, NOMBRE_CONVENCIONES, NOMBRE_MAPA
 
@@ -23,8 +25,19 @@ def leer_archivo(ruta: Path):
 
 
 def escribir_archivo(ruta: Path, texto: str, eol: str):
-    with open(ruta, "w", encoding="utf-8", newline="") as f:
-        f.write(texto.replace("\n", eol))
+    """Escritura atómica usando un archivo temporal y os.replace."""
+    directorio = ruta.parent
+    directorio.mkdir(parents=True, exist_ok=True)
+    
+    # Se crea un temporal en la misma carpeta para asegurar que os.replace sea atómico (mismo disco)
+    fd, temp_path = tempfile.mkstemp(dir=directorio, prefix=".nina_tmp_", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(texto.replace("\n", eol))
+        os.replace(temp_path, ruta)
+    except Exception as e:
+        Path(temp_path).unlink(missing_ok=True)
+        raise e
 
 
 def archivo_cambio_en_disco(ruta: Path, original: str) -> bool:
@@ -82,26 +95,68 @@ class Proyecto:
             return False
         return bool(r.stdout.strip())
 
-    # ------------------------------ Backups ---------------------------------- #
-    def hacer_backup(self, ruta) -> Path:
+    # ------------------------------ Backups por Lote ------------------------- #
+    def hacer_backup(self, rutas: Union[Path, str, list]) -> Path:
+        """Crea un backup transaccional para un lote de archivos con manifiesto."""
+        if isinstance(rutas, (str, Path)):
+            rutas = [rutas]
+
         carpeta = self.carpeta_backups
         carpeta.mkdir(exist_ok=True)
         gitignore = carpeta / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text("*\n", encoding="utf-8")  # git ignora todo el contenido
-        sello = datetime.now().strftime("%Y%m%d-%H%M%S")
-        nombre = self.clave(ruta).replace("/", "__")
-        destino = carpeta / f"{nombre}.{sello}.bak"
-        shutil.copy2(self.abs(ruta), destino)
-        return destino
+            gitignore.write_text("*\n", encoding="utf-8")
+
+        # Sello con milisegundos para evitar colisiones
+        sello = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:19]
+        lote_dir = carpeta / f"lote_{sello}"
+        lote_dir.mkdir(exist_ok=True)
+
+        manifiesto = {"id": sello, "archivos": {}}
+
+        for r in rutas:
+            ruta_abs = self.abs(r)
+            clave = self.clave(r)
+            if ruta_abs.exists():
+                # Archivo existente: se copia al backup
+                nombre_bak = clave.replace("/", "__") + ".bak"
+                destino = lote_dir / nombre_bak
+                shutil.copy2(ruta_abs, destino)
+                manifiesto["archivos"][clave] = {"estado": "modificado", "backup": nombre_bak}
+            else:
+                # Archivo nuevo
+                manifiesto["archivos"][clave] = {"estado": "nuevo"}
+
+        (lote_dir / "manifiesto.json").write_text(json.dumps(manifiesto, indent=2), encoding="utf-8")
+        return lote_dir
 
     def ultimo_backup(self, ruta) -> Optional[Path]:
+        """Busca el último backup de un archivo específico iterando los manifiestos."""
         carpeta = self.carpeta_backups
         if not carpeta.is_dir():
             return None
-        prefijo = self.clave(ruta).replace("/", "__") + "."
-        candidatos = sorted(p for p in carpeta.glob("*.bak") if p.name.startswith(prefijo))
-        return candidatos[-1] if candidatos else None
+            
+        clave_buscada = self.clave(ruta)
+        # Ordenamos los lotes del más nuevo al más viejo
+        lotes = sorted([d for d in carpeta.glob("lote_*") if d.is_dir()], reverse=True)
+
+        for lote in lotes:
+            manifiesto_file = lote / "manifiesto.json"
+            if not manifiesto_file.exists():
+                continue
+            try:
+                manifiesto = json.loads(manifiesto_file.read_text(encoding="utf-8"))
+                if clave_buscada in manifiesto.get("archivos", {}):
+                    datos_archivo = manifiesto["archivos"][clave_buscada]
+                    if datos_archivo.get("estado") == "modificado":
+                        return lote / datos_archivo["backup"]
+                    elif datos_archivo.get("estado") == "nuevo":
+                        # Si fue nuevo, el archivo no existía antes. Devolvemos None.
+                        return None
+            except json.JSONDecodeError:
+                pass
+                
+        return None
 
     # ------------------------------ Contexto en disco ------------------------ #
     def cargar_convenciones(self) -> str:
