@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .config import NOMBRE_BACKUPS, NOMBRE_CONVENCIONES, NOMBRE_MAPA
+from .config import NOMBRE_BACKUPS, NOMBRE_CONVENCIONES, NOMBRE_MAPA, EXTENSIONES_EDITABLES, IGNORE_DIRS
 
 
 # ------------------------------ E/S de archivos (no dependen del proyecto) ----- #
@@ -29,7 +29,6 @@ def escribir_archivo(ruta: Path, texto: str, eol: str):
     directorio = ruta.parent
     directorio.mkdir(parents=True, exist_ok=True)
     
-    # Se crea un temporal en la misma carpeta para asegurar que os.replace sea atómico (mismo disco)
     fd, temp_path = tempfile.mkstemp(dir=directorio, prefix=".nina_tmp_", text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
@@ -41,7 +40,6 @@ def escribir_archivo(ruta: Path, texto: str, eol: str):
 
 
 def archivo_cambio_en_disco(ruta: Path, original: str) -> bool:
-    """True si el archivo ya no es el que le mandamos a la IA (lo editaste mientras tanto)."""
     try:
         actual, _ = leer_archivo(ruta)
     except OSError:
@@ -56,7 +54,7 @@ class Proyecto:
     def __repr__(self):
         return f"Proyecto({str(self.raiz)!r})"
 
-    # ------------------------------ Rutas ------------------------------------ #
+    # ------------------------------ Rutas y Seguridad (Fase 0.7) ------------- #
     @property
     def ruta_mapa(self) -> Path:
         return self.raiz / NOMBRE_MAPA
@@ -70,21 +68,44 @@ class Proyecto:
         return self.raiz / NOMBRE_BACKUPS
 
     def abs(self, ruta) -> Path:
-        """Ruta absoluta. Las relativas se interpretan desde la raíz del proyecto."""
+        """Ruta absoluta sin validación de seguridad (solo resolución de paths)."""
         p = Path(ruta).expanduser()
         return p if p.is_absolute() else self.raiz / p
 
     def clave(self, ruta) -> str:
-        """Ruta relativa a la raíz, con '/' (así se identifican los archivos en el mapa)."""
         p = self.abs(ruta)
         try:
             return p.resolve().relative_to(self.raiz).as_posix()
         except ValueError:
             return p.as_posix()
 
+    def validar_ruta_segura(self, ruta: Union[str, Path]) -> Path:
+        """
+        Garantiza que la ruta generada por la IA no escape del proyecto ni toque archivos sensibles.
+        Lanza ValueError si la ruta es inválida. Devuelve el Path absoluto seguro.
+        """
+        p = self.abs(ruta).resolve()
+        
+        # 1. Prevenir Path Traversal (debe estar dentro de self.raiz)
+        try:
+            relativa = p.relative_to(self.raiz)
+        except ValueError:
+            raise ValueError(f"Ruta prohibida (intento de escape del directorio raíz): {ruta}")
+            
+        # 2. Proteger carpetas internas/del sistema
+        partes = relativa.parts
+        for ignorada in IGNORE_DIRS:
+            if ignorada in partes:
+                raise ValueError(f"Ruta prohibida (intento de escritura en carpeta restringida '{ignorada}'): {ruta}")
+                
+        # 3. Validar extensión permitida
+        if p.suffix not in EXTENSIONES_EDITABLES:
+            raise ValueError(f"Extensión no permitida para edición ({p.suffix}). Permitidas: {', '.join(EXTENSIONES_EDITABLES)}")
+            
+        return p
+
     # ------------------------------ Git -------------------------------------- #
     def git_archivo_sucio(self, ruta) -> bool:
-        """True si el archivo tiene cambios sin commitear. Sin git instalado o fuera de un repo -> False."""
         try:
             r = subprocess.run(
                 ["git", "status", "--porcelain", "--", str(self.abs(ruta))],
@@ -97,7 +118,6 @@ class Proyecto:
 
     # ------------------------------ Backups por Lote ------------------------- #
     def hacer_backup(self, rutas: Union[Path, str, list]) -> Path:
-        """Crea un backup transaccional para un lote de archivos con manifiesto."""
         if isinstance(rutas, (str, Path)):
             rutas = [rutas]
 
@@ -107,7 +127,6 @@ class Proyecto:
         if not gitignore.exists():
             gitignore.write_text("*\n", encoding="utf-8")
 
-        # Sello con milisegundos para evitar colisiones
         sello = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:19]
         lote_dir = carpeta / f"lote_{sello}"
         lote_dir.mkdir(exist_ok=True)
@@ -118,26 +137,22 @@ class Proyecto:
             ruta_abs = self.abs(r)
             clave = self.clave(r)
             if ruta_abs.exists():
-                # Archivo existente: se copia al backup
                 nombre_bak = clave.replace("/", "__") + ".bak"
                 destino = lote_dir / nombre_bak
                 shutil.copy2(ruta_abs, destino)
                 manifiesto["archivos"][clave] = {"estado": "modificado", "backup": nombre_bak}
             else:
-                # Archivo nuevo
                 manifiesto["archivos"][clave] = {"estado": "nuevo"}
 
         (lote_dir / "manifiesto.json").write_text(json.dumps(manifiesto, indent=2), encoding="utf-8")
         return lote_dir
 
     def ultimo_backup(self, ruta) -> Optional[Path]:
-        """Busca el último backup de un archivo específico iterando los manifiestos."""
         carpeta = self.carpeta_backups
         if not carpeta.is_dir():
             return None
             
         clave_buscada = self.clave(ruta)
-        # Ordenamos los lotes del más nuevo al más viejo
         lotes = sorted([d for d in carpeta.glob("lote_*") if d.is_dir()], reverse=True)
 
         for lote in lotes:
@@ -151,7 +166,6 @@ class Proyecto:
                     if datos_archivo.get("estado") == "modificado":
                         return lote / datos_archivo["backup"]
                     elif datos_archivo.get("estado") == "nuevo":
-                        # Si fue nuevo, el archivo no existía antes. Devolvemos None.
                         return None
             except json.JSONDecodeError:
                 pass
@@ -165,7 +179,6 @@ class Proyecto:
         return ""
 
     def cargar_mapa(self) -> dict:
-        """Devuelve {ruta: {'signatures': [...], 'imports': [...]}} (soporta el formato viejo v1)."""
         try:
             datos = json.loads(self.ruta_mapa.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
