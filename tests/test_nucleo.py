@@ -402,3 +402,32 @@ def test_detector_de_errores_de_sintaxis():
     codigo_roto = "def suma(a, b\n    return a + b\n"  # falta '):'
     assert tiene_errores_sintaxis(codigo_ok, "test.py") is False
     assert tiene_errores_sintaxis(codigo_roto, "test.py") is True
+
+# ----------------------------------------------------------------- seguridad de rutas (Fase 0.7)
+def test_seguridad_rutas_validas_e_invalidas():
+    with tmp() as d:
+        P = Proyecto(d)
+        
+        # 1. Ruta válida
+        ruta_ok = P.validar_ruta_segura("src/app.py")
+        assert ruta_ok.name == "app.py"
+        assert str(d) in str(ruta_ok)
+        
+        # 2. Intento de escape (Path Traversal)
+        with pytest.raises(ValueError, match="escape del directorio raíz"):
+            P.validar_ruta_segura("../../../etc/passwd")
+            
+        with pytest.raises(ValueError, match="escape del directorio raíz"):
+            # En Windows simular escape absoluto a C: o barra inicial
+            P.validar_ruta_segura("/un/path/absoluto/fuera/del/proyecto.py")
+            
+        # 3. Escritura en carpetas protegidas
+        with pytest.raises(ValueError, match="carpeta restringida"):
+            P.validar_ruta_segura(".git/config.py")
+            
+        with pytest.raises(ValueError, match="carpeta restringida"):
+            P.validar_ruta_segura("node_modules/libreria/index.js")
+            
+        # 4. Extensión no permitida
+        with pytest.raises(ValueError, match="Extensión no permitida"):
+            P.validar_ruta_segura("src/archivo.exe")
