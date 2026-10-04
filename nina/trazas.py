@@ -8,8 +8,8 @@ from typing import Optional
 
 from .proyecto import Proyecto
 
-PATRON_TRAZA = re.compile(r"([\w@\-./\\:]*?[\w\-]+\.(?:java|jsx?|tsx?|mjs)):(\d+)(?::\d+)?")
-
+# FASE 0.8: Se agregó (?:\?[^:]*)? antes de los dos puntos para ignorar queries como ?t=1234 de Vite
+PATRON_TRAZA = re.compile(r"([\w@\-./\\:]*?[\w\-]+\.(?:java|jsx?|tsx?|mjs))(?:\?[^:]*)?:(\d+)(?::\d+)?")
 
 PATRON_TRAZA_PY = re.compile(r'File "([^"]+\.py)", line (\d+)')
 
