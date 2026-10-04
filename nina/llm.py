@@ -4,15 +4,13 @@ Cliente del servidor del modelo (API compatible con OpenAI, por streaming). Sin 
 import json
 import time
 from typing import Callable, Optional
-
 import httpx
 
-from .config import API_URL, MODELO
+from .config import gestor_config
 
 
 class ErrorLLM(Exception):
     """Fallo de conexión o respuesta inválida/cortada del servidor del modelo."""
-
 
 def separar_pensamiento(contenido: str):
     """Algunos servidores mezclan el razonamiento dentro de `content` con etiquetas <think>."""
@@ -21,12 +19,44 @@ def separar_pensamiento(contenido: str):
         if "</think>" in resto:
             pensado, despues = resto.split("</think>", 1)
             return pensado.strip(), (antes + despues).strip()
-        return resto.strip(), antes.strip()  # todavía pensando
-    if "</think>" in contenido:  # la plantilla del modelo ya abrió <think> por nosotros
+        return resto.strip(), antes.strip()  
+    if "</think>" in contenido:  
         pensado, despues = contenido.split("</think>", 1)
         return pensado.strip(), despues.strip()
     return "", contenido
 
+# --- DRIVERS POR SERVIDOR (Fase 0.4) ---
+class DriverBase:
+    def preparar_payload(self, mensajes, modelo, temperatura):
+        return {
+            "model": modelo,
+            "messages": mensajes,
+            "temperature": temperatura,
+            "stream": True
+        }
+
+class OllamaDriver(DriverBase):
+    def preparar_payload(self, mensajes, modelo, temperatura):
+        payload = super().preparar_payload(mensajes, modelo, temperatura)
+        # Ollama necesita num_ctx explícito para no recortar contexto grande en silencio
+        ctx_size = gestor_config.perfil_actual.get("max_tokens_prompt", 12000) + 4000
+        payload["options"] = {"num_ctx": ctx_size}
+        return payload
+
+class LlamaCppDriver(DriverBase):
+    def preparar_payload(self, mensajes, modelo, temperatura):
+        payload = super().preparar_payload(mensajes, modelo, temperatura)
+        payload["cache_prompt"] = True 
+        payload["stream_options"] = {"include_usage": True}
+        return payload
+
+def obtener_driver(tipo: str) -> DriverBase:
+    if tipo == "ollama":
+        return OllamaDriver()
+    elif tipo == "llama.cpp":
+        return LlamaCppDriver()
+    return DriverBase()
+# ---------------------------------------
 
 def stream_llm(
     mensajes: list,
@@ -36,30 +66,24 @@ def stream_llm(
     modelo: Optional[str] = None,
     on_estadisticas: Optional[Callable[[dict], None]] = None,
 ) -> str:
-    """
-    Llama al modelo por streaming. Sin dependencias de UI: sirve para el CLI y para la web.
-    - on_fragmento(respuesta_acumulada): la respuesta visible (sin razonamiento).
-    - on_pensamiento(razonamiento_acumulado): el razonamiento, venga como `reasoning_content` (llama.cpp),
-      `reasoning`/`thinking` (Ollama) o como <think>…</think> dentro del contenido.
-    - on_estadisticas(dict): al terminar. Usa los números reales del servidor (usage/timings) si los manda;
-      si no, solo tiempos. Claves: tokens_entrada, tokens_salida, tps, seg_total, seg_primer_token.
-    Devuelve solo la respuesta. Si el servidor corta por límite de tokens/contexto, lanza ErrorLLM
-    (una respuesta truncada aplicaría solo parte de los bloques).
-    """
-    payload = {
-        "model": modelo or MODELO,
-        "messages": mensajes,
-        "temperature": 0.1,
-        "stream": True,
-        "cache_prompt": True,  # llama.cpp reutiliza el prefijo; otros servidores lo ignoran
-        "stream_options": {"include_usage": True},  # pide el conteo real de tokens al final
-    }
-    destino = url or API_URL
+    """Llama al modelo por streaming usando el driver adecuado según la configuración."""
+    perfil = gestor_config.perfil_actual
+    destino = url or perfil["url"]
+    modelo_final = modelo or perfil["modelo"]
+    tipo = perfil.get("tipo", "ollama")
+    temperatura = perfil.get("temperatura", 0.1)
+    api_key = perfil.get("api_key", "") # <-- Nueva lectura de API Key
+
+    driver = obtener_driver(tipo)
+    payload = driver.preparar_payload(mensajes, modelo_final, temperatura)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None # <-- Header
+
     t0, t_primero, usage, timings = time.monotonic(), None, {}, {}
     razonamiento, contenido, finish = "", "", None
     ult_pens, ult_resp = "", ""
     try:
-        with httpx.Client(timeout=httpx.Timeout(None, connect=10.0)) as client:
+        # Añadimos headers=headers al Client
+        with httpx.Client(timeout=httpx.Timeout(None, connect=10.0), headers=headers) as client:
             with client.stream("POST", destino, json=payload) as r:
                 if r.status_code != 200:
                     r.read()
@@ -104,8 +128,7 @@ def stream_llm(
     if finish == "length":
         raise ErrorLLM(
             "El modelo se quedó sin tokens o contexto antes de terminar (finish_reason=length). "
-            "Los modelos que razonan gastan mucho contexto pensando: subí el contexto del servidor "
-            "(llama-server: -c, Ollama: num_ctx) o probá con un archivo/mapa más chico."
+            "Revisá la configuración de max_tokens_prompt."
         )
     if on_estadisticas:
         t_fin = time.monotonic()
@@ -122,12 +145,14 @@ def stream_llm(
         })
     return ult_resp.strip()
 
-
 def listar_modelos(url: Optional[str] = None) -> list:
-    """Consulta GET /v1/models (llama.cpp, Ollama y LM Studio lo soportan). Sirve para probar la conexión."""
-    base = (url or API_URL).split("/chat/completions")[0].rstrip("/")
+    """Consulta GET /v1/models (llama.cpp, Ollama y LM Studio lo soportan)."""
+    perfil = gestor_config.perfil_actual
+    base = (url or perfil["url"]).split("/chat/completions")[0].rstrip("/")
+    api_key = perfil.get("api_key", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     try:
-        r = httpx.get(base + "/models", timeout=5.0)
+        r = httpx.get(base + "/models", timeout=5.0, headers=headers)
         r.raise_for_status()
         datos = r.json()
     except httpx.ConnectError:
