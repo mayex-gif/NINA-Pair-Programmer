@@ -353,42 +353,69 @@ if res is not None:
         if not m["exactas"]:
             st.caption("El servidor no informó el conteo de tokens: los valores con ~ son estimados.")
 
-    cambio = res.cambios[0] if res.cambios else None
-
-    if not res.es_valida or not cambio:
+    if not res.es_valida or not res.cambios:
         st.error("No se obtuvo un cambio válido. No se modificó nada.")
-        errores = cambio.errores if cambio else ["No se generaron cambios."]
+        # Mostrar errores del primer archivo que haya fallado (o generales)
+        errores = next((c.errores for c in res.cambios if c.errores), ["No se generaron cambios."])
         for e in errores:
             st.code(e, language=None)
         with st.expander("Respuesta del modelo"):
             st.code(res.respuesta or "(vacía)", language=None)
     else:
-        st.markdown("### Cambios propuestos")
-        for aviso in cambio.avisos:
-            st.warning(aviso)
-        recorte = aviso_recorte(cambio.original, cambio.nuevo)
-        if recorte:
-            st.error(recorte)
-        if cambio.nuevo == cambio.original:
-            st.info("La respuesta no produce cambios.")
-        else:
-            a, b = renderizar_diff(cambio.original, cambio.nuevo, solo_cambios)
-            st.caption(f"`{P.clave(ss.ruta)}`   ·   +{a}  −{b}")
-
-        b1, b2, _ = st.columns([1, 1, 5])
-        if b1.button("Aplicar y guardar", type="primary", disabled=(cambio.nuevo == cambio.original) or ss.guardado):
-            if archivo_cambio_en_disco(ss.ruta, cambio.original):
-                st.error("El archivo cambió en disco desde que se generó la propuesta. No se guardó nada: volvé a generar.")
+        st.markdown(f"### Cambios propuestos ({len(res.cambios)} archivos)")
+        
+        hay_cambios_reales = False
+        rutas_a_guardar = []
+        
+        # 1. Renderizar cada archivo modificado
+        for cambio in res.cambios:
+            st.markdown(f"**Archivo:** `{cambio.clave}`")
+            
+            for aviso in cambio.avisos:
+                st.warning(aviso)
+                
+            recorte = aviso_recorte(cambio.original, cambio.nuevo)
+            if recorte:
+                st.error(recorte)
+                
+            if cambio.nuevo == cambio.original:
+                st.info("La respuesta no produce cambios en este archivo.")
             else:
-                backup = P.hacer_backup(ss.ruta)
-                escribir_archivo(ss.ruta, cambio.nuevo, cambio.eol)
-                ss.msg = f"{P.clave(ss.ruta)} guardado. Backup: {backup}"
+                hay_cambios_reales = True
+                rutas_a_guardar.append(cambio)
+                a, b = renderizar_diff(cambio.original, cambio.nuevo, solo_cambios)
+                st.caption(f"`{cambio.clave}`   ·   +{a}  −{b}")
+            st.write("") # Espaciador
+
+        # 2. Botones de acción globales
+        b1, b2, _ = st.columns([1, 1, 5])
+        
+        if b1.button("Aplicar y guardar todo", type="primary", disabled=not hay_cambios_reales or ss.guardado):
+            # Validar que ningún archivo haya cambiado en disco mientras leíamos
+            archivos_sucios = [c.clave for c in rutas_a_guardar if archivo_cambio_en_disco(P.abs(c.clave), c.original)]
+            
+            if archivos_sucios:
+                st.error(f"Los siguientes archivos cambiaron en disco desde que se generó la propuesta: {', '.join(archivos_sucios)}. No se guardó nada: volvé a generar.")
+            else:
+                # Hacer backup en lote
+                rutas_abs = [P.abs(c.clave) for c in rutas_a_guardar]
+                backup = P.hacer_backup(rutas_abs)
+                
+                # Escribir todos los archivos
+                for c in rutas_a_guardar:
+                    escribir_archivo(P.abs(c.clave), c.nuevo, c.eol)
+                    # Actualizamos el mapa atómicamente por cada archivo guardado (Fase 0.8)
+                    P.actualizar_archivo_en_mapa(c.clave)
+                    
+                ss.msg = f"{len(rutas_a_guardar)} archivo(s) guardado(s). Lote de backup: {backup.name}"
                 ss.guardado = True  # Mantiene el diff en pantalla pero bloquea el botón
                 st.rerun()
+                
         if b2.button("Descartar"):
             ss.resultado, ss.msg = None, "Cambios descartados."
             st.rerun()
-        with st.expander("Respuesta del modelo"):
+            
+        with st.expander("Respuesta completa del modelo"):
             st.code(res.respuesta, language=None)
 
     if ss.pens:

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .bloques import interpretar_respuesta
+from .bloques import interpretar_respuesta_lote
 from .config import MAX_ARCHIVOS_MAPA, MAX_INTENTOS, PRESUPUESTO_MAPA_CHARS, SISTEMA_BASE
 from .llm import stream_llm
 from .mapa import tiene_errores_sintaxis
@@ -112,9 +112,10 @@ class CambioArchivo:
     errores: list = field(default_factory=list)
     avisos: list = field(default_factory=list)
 
+
 @dataclass
 class Propuesta:
-    """El lote completo devuelto por el LLM. Reemplaza al antiguo 'Resultado'."""
+    """El lote completo devuelto por el LLM."""
     cambios: list[CambioArchivo] = field(default_factory=list)
     intentos: int = 1
     respuesta: str = ""
@@ -139,25 +140,27 @@ def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool
     return Contexto(ruta, clave, original, eol, mensajes, tokens, usados, total, bool(convenciones))
 
 
-def mensaje_reintento(errores: list) -> str:
-    return (
-        "Tu respuesta anterior no se pudo aplicar:\n"
-        + "\n".join(f"- {e}" for e in errores)
-        + "\n\nCada SEARCH debe copiar EXACTAMENTE el archivo ORIGINAL que te envié (sin ningún cambio aplicado). "
-        "Reenviá TODOS los bloques SEARCH/REPLACE de nuevo (los que estaban bien y los corregidos), "
-        "usando solo ese formato y sin explicaciones."
+def mensaje_reintento(errores_dict: dict) -> str:
+    msg = "Tu respuesta anterior no se pudo aplicar en los siguientes archivos:\n\n"
+    for ruta, errs in errores_dict.items():
+        msg += f"Archivo: {ruta}\n"
+        for e in errs:
+            msg += f"- {e}\n"
+        msg += "\n"
+    msg += (
+        "Cada SEARCH debe copiar EXACTAMENTE el código original. "
+        "Si el archivo es nuevo, dejá SEARCH vacío. "
+        "Reenviá TODOS los bloques corregidos, asegurándote de incluir la ruta del archivo justo arriba de cada bloque."
     )
+    return msg
 
 
 def generar_cambio(
     ctx: Contexto,
     llamar: Optional[Callable[[list], str]] = None,
-    on_reintento: Optional[Callable[[int, list], None]] = None,
+    on_reintento: Optional[Callable[[int, dict], None]] = None,
 ) -> Propuesta:
-    """
-    Genera una Propuesta (lote de cambios). 
-    En esta etapa de transición, devuelve siempre un lote con 1 solo archivo (ctx.clave).
-    """
+    """Genera una Propuesta (lote de cambios) manejando múltiples archivos."""
     llamar = llamar or stream_llm
     mensajes = list(ctx.mensajes)  
     propuesta = Propuesta()
@@ -168,35 +171,47 @@ def generar_cambio(
         propuesta.intentos = intento
         
         if not respuesta.strip():  
-            cambio_vacio = CambioArchivo(
+            propuesta.cambios = [CambioArchivo(
                 clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
                 errores=["El modelo no devolvió ninguna respuesta (¿agotó el contexto o los tokens?)."]
-            )
-            propuesta.cambios = [cambio_vacio]
+            )]
             return propuesta
             
-        nuevo, errores, avisos = interpretar_respuesta(respuesta, ctx.original)
+        originales = {ctx.clave: ctx.original}
+        nuevos, errores_por_ruta, avisos_por_ruta = interpretar_respuesta_lote(respuesta, originales, ctx.clave)
 
-        # --- FASE 0.6: Validación de sintaxis ---
-        if nuevo is not None:
-            if not tiene_errores_sintaxis(ctx.original, ctx.clave) and tiene_errores_sintaxis(nuevo, ctx.clave):
-                avisos.append("🚨 Advertencia de sintaxis: el código generado contiene errores estructurales (llaves sin cerrar, indentación rota, etc).")
-        # ----------------------------------------
+        # Si el modelo no generó bloques, devolvemos un error en el archivo principal
+        if not nuevos and not errores_por_ruta:
+            errores_por_ruta = {ctx.clave: ["No pude interpretar la respuesta: no hay bloques SEARCH/REPLACE."]}
 
-        cambio_actual = CambioArchivo(
-            clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
-            nuevo=nuevo, errores=errores, avisos=avisos
-        )
-        propuesta.cambios = [cambio_actual]
+        cambios = []
+        rutas_procesadas = set(nuevos.keys()) | set(errores_por_ruta.keys())
+        
+        for ruta in rutas_procesadas:
+            orig = originales.get(ruta, "")
+            nuevo = nuevos.get(ruta)
+            errs = errores_por_ruta.get(ruta, [])
+            avisos = avisos_por_ruta.get(ruta, [])
+
+            if nuevo is not None:
+                if not tiene_errores_sintaxis(orig, ruta) and tiene_errores_sintaxis(nuevo, ruta):
+                    avisos.append("🚨 Advertencia de sintaxis: el código generado contiene errores estructurales (llaves sin cerrar, indentación rota, etc).")
+
+            cambios.append(CambioArchivo(
+                clave=ruta, original=orig, eol=ctx.eol, 
+                nuevo=nuevo, errores=errs, avisos=avisos
+            ))
+            
+        propuesta.cambios = cambios
         
         if propuesta.es_valida:
             return propuesta
             
         if intento < MAX_INTENTOS:
             if on_reintento:
-                on_reintento(intento, errores)
+                on_reintento(intento, errores_por_ruta)
             mensajes.append({"role": "assistant", "content": respuesta})
-            mensajes.append({"role": "user", "content": mensaje_reintento(errores)})
+            mensajes.append({"role": "user", "content": mensaje_reintento(errores_por_ruta)})
             
     return propuesta
 
