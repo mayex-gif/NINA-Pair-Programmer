@@ -28,7 +28,7 @@ python frontend.py deshacer "ruta/archivo.jsx"
 python frontend.py probar              # prueba conexión y muestra cómo llega el razonamiento
 python -m nina refactor ...         # equivalente a frontend.py (el paquete nina/ es el núcleo)
 # todos los comandos del CLI aceptan --proyecto/-C <raíz>; las rutas relativas se leen desde esa raíz
-pytest -q                            # esperado: 60 passed, 3 xfailed (los 3 xfail marcan huecos conocidos)
+pytest -q                            # esperado: 64 passed, 1 xfailed (el xfail marca un hueco menor conocido)
 
 ```
 
@@ -54,7 +54,7 @@ A partir de la Fase 0.4, NINA gestiona los perfiles de servidor, URLs, modelos, 
 | `nina/mapa.py` | Extractores de firmas e imports (tree-sitter + regex) y escritura de `.ai_map.json`. | 
 | `nina/vigia.py` | Watcher incremental (watchdog). | 
 | `nina/cli.py` | CLI (typer + rich). | 
-| `tests/` | Suite de pruebas unitarias y de integración (63 tests). | 
+| `tests/` | Suite de pruebas unitarias y de integración (67 tests). | 
 
 **Regla de capas:** el núcleo (todo `nina/` salvo `cli.py` y `vigia.py`) no importa `typer`, `rich`, `streamlit` ni `watchdog`; un test lo vigila.
 
@@ -72,7 +72,7 @@ A partir de la Fase 0.4, NINA gestiona los perfiles de servidor, URLs, modelos, 
 
 ### 2. El Ejecutor Stateless (`nina/contexto.py`, `bloques.py`, `llm.py`, `cli.py`)
 
-Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar configuraciones críticas (ej. `num_ctx` en Ollama) previniendo recortes silenciosos. Modifica un archivo a la vez en memoria, con validación de modelo de datos (`Propuesta.es_valida`) y sistema de auto-healing de hasta 3 intentos por fallas de parser.
+Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar configuraciones críticas (ej. `num_ctx` en Ollama) previniendo recortes silenciosos. Modifica múltiples archivos en memoria simultáneamente, con validación de modelo de datos (`Propuesta.es_valida`) y sistema de auto-healing de hasta 3 intentos por fallas de parser.
 
 ### 3. La interfaz web (`web.py`)
 
@@ -80,7 +80,7 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 * Panel "Servidor" con selector de perfiles dinámico (consulta `/v1/models` en vivo) y guardado persistente.
 
-* Diff **lado a lado** sincronizado.
+* Diff **lado a lado** sincronizado por lotes.
 
 * Métricas completas, control de API Keys y despliegue de razonamiento.
 
@@ -88,21 +88,11 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 **Hecho y funcionando**
 
-* **Fase 0.1 a 0.4 completadas:** 63 tests operativos. Núcleo aislado en `nina/` con manejo de estados vía `Proyecto(raiz)` y `GestorConfig`.
+* **Fase 0 completada:** Núcleo sólido, transaccional, tolerante a codificaciones, con validación previa de sintaxis y protegido contra path traversal.
 
-* Modelo de datos estructurado en lotes (`Propuesta` y `CambioArchivo`) preparado para multi-archivo.
+* **Fase 4.1 completada:** Edición multi-archivo real. Diffs apilados, auto-inyección de contexto según el prompt, y "Deshacer" en lote.
 
-* Configuración persistente de UI y patrón de Drivers para servidores LLM.
-
-* Backups + `deshacer`, diff visual, aviso de Git sucio y auto-healing tolerante a fallos.
-
-* Soporte de Tree-sitter para Python, TS/JS y Java.
-
-**No hecho:** escritura transaccional atómica de lotes (Fase 0.5), validación de sintaxis estricta post-edición, ejecución real multi-archivo simultánea y bucle agente (Agent Loop).
-
-## 🔎 ¿Puede el sistema trabajar con varios archivos? (estado real)
-
-**En transición.** La capa de datos (`Contexto`, `Propuesta`, `CambioArchivo`) y las capas de presentación (`web.py`, `cli.py`) ya operan procesando listas de cambios. Sin embargo, el **Prompt** (`SISTEMA_BASE`), el **Parser** de bloques y el gestor de **Backups** todavía están limitados artificialmente a resolver y guardar un solo archivo por ciclo, hasta que se complete la Fase 0.5 y 4.1.
+**No hecho:** Prompt global (sin archivo pivote), fusión de tres vías (merge), y bucle agente (Agent Loop).
 
 ## 🧱 Deuda técnica detectada (arreglar antes de crecer)
 
@@ -128,32 +118,22 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 | # | Tarea | Resuelve |
 |---|---|---|
-| 0.1 | **Tests con pytest** de las funciones puras y comandos. **Estado: Hecha**. | #3 |
-| 0.2 | **Separar el núcleo:** paquete `nina/`, clase `Proyecto(raiz)`. **Estado: Hecha**. | #1, #2, #10 |
-| 0.3 | **Modelo de datos multi-archivo:** `Propuesta` -> lista de `CambioArchivo`. **Estado: Hecha**. | Bloqueo core |
-| 0.4 | **Configuración persistente + drivers:** UI conectada a `config.json`, APIs dinámicas. **Estado: Hecha**. | #7, #8 |
-| 0.5 | **Escritura atómica** (`os.replace`) y **backups por lote** con manifiesto. **Estado: Hecha**. | #4, #5 |
-| 0.6 | **Validación de sintaxis** del texto resultante con tree-sitter (`has_error`). **Estado: Hecha**. | #6 |
-| 0.7 | **Seguridad de rutas:** normalización contra Path Traversal y carpetas restringidas. **Estado: Hecha**. | Core security |
-| 0.8 | Lectura tolerante de codificación; refresco del mapa; patrón de Vite. **Estado: Hecha**. | #11, #12, #13 |
+| 0.1 a 0.8 | Pruebas, persistencia, transacciones, validación de sintaxis, seguridad de rutas y resiliencia. **Estado: Hechas**. | Toda la deuda core |
 
 ### Fase 4 — Más potencia
 
-**4.1 Edición multi-archivo y archivos nuevos**
+| # | Tarea | Estado |
+|---|---|---|
+| 4.1 | **Edición multi-archivo y archivos nuevos:** Bloques SEARCH/REPLACE con encabezados de ruta. SEARCH vacío = creación. | ✅ **Hecha** |
 
-* Bloques SEARCH/REPLACE con encabezados de ruta.
+**4.2 Prompt Global (Sin archivo pivote)**
 
-* SEARCH vacío = creación de archivo nuevo.
-
-* Planificador inicial: IA devuelve plan de intención y *contratos* (ej. firmas de funciones) que mantiene la coherencia. Ejecución stateless individual por archivo cuidando la VRAM.
-
-**4.2 Revisión por bloques estilo conflicto de merge**
-
-* Evaluar *hunks* con `difflib`. Interfaz de ✅ Aceptar IA, ⛔ Mantener actual, ➕ Ambos.
+* Permitir el uso de la interfaz web sin seleccionar ningún archivo en la barra lateral.
+* Modificar el armador de contexto para que, si no hay archivo pivote, se base 100% en el mapa y en los nombres de archivos mencionados en el prompt para crear la estructura base.
 
 **4.3 Fusión de tres vías (cambio en disco durante generación)**
 
-* Merge a tres bandas entre estado inicial, propuesta IA y cambios locales de usuario.
+* Merge a tres bandas entre estado inicial, propuesta IA y cambios locales de usuario (en lugar de bloquear el guardado si se detecta Git sucio).
 
 **4.4 Integración con Git**
 
@@ -161,9 +141,8 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 **4.5 Resolución real de imports y limitación de vecindad**
 
-* Portar resolutor indexado a Python.
-
-* **Optimización de contexto:** Limitar explícitamente el árbol de importaciones inyectadas en el Prompt a dependencias inmediatas (profundidad 1 o 2 máximo respecto a los archivos en modificación).
+* Portar resolutor indexado a Python para corregir la colisión de nombres (`index.js`).
+* **Optimización de contexto:** Limitar explícitamente el árbol de importaciones inyectadas en el Prompt a dependencias inmediatas (profundidad 1 o 2 máximo).
 
 ### Fase 5 — Interfaz Avanzada y Visualización
 
@@ -174,26 +153,18 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 **5.3 Árbol de Proyecto Enriquecido**
 
 * Reemplazar visor estático por árbol colapsable interactivo.
-
 * **Profundidad de código:** Que el árbol renderice no solo archivos, sino que permita desplegar sus *atributos, métodos, y verbos HTTP (APIs)* internos mapeados directamente por Tree-sitter.
 
 **5.4 Pantalla de Revisión Lote (Multi-archivo)**
 
-* Lista lateral de impactos (✏️ modificado, 🆕 nuevo, ⚠️ error).
+* Lista lateral de impactos (✏️ modificado, 🆕 nuevo, ⚠️ error) para navegar fácilmente cuando se cambian +10 archivos.
 
 **5.5 Gestión Visual de Recursos (Métricas)**
 
-* Implementar una barra de progreso de tokens en vivo (ej. `[██████░░░░] 12k / 32k`) calculada en tiempo real para visualizar la ocupación de la VRAM y el límite de contexto. Mejorar la disposición de las métricas.
+* Implementar una barra de progreso de tokens en vivo calculada en tiempo real para visualizar la ocupación de la VRAM.
 
 ### Fase 6 — Autonomía Delegada (Agent Loop)
 
 * **Bucle de validación de entorno real:** El sistema corre comandos locales (`npm run lint`, `mvn test`, `pytest`) y auto-corrige fallos sin intervención (hasta X reintentos).
-
-* **Ejecución de Comandos LLM:** Permitir que el LLM proponga o ejecute (previa confirmación) comandos bash/tests de validación para probar funcionalidades directamente desde la terminal integrada.
-
+* **Ejecución de Comandos LLM:** Permitir que el LLM proponga o ejecute comandos bash/tests.
 * **Micro-tareas (Checklists):** Fragmentación de planes grandes en tareas atómicas (`.ai_todo.md`) que resetean contexto para evitar alucinaciones.
-
-
-
-ANCLAR AL FINAL EL PENSAMIENTO O LA GENERACION DE CODIGO
-QUE NO SE BORREN LOS CAMBIOS A MEDIDA QUE SE AGREGAN MAS DATOS

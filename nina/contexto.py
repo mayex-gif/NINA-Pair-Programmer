@@ -34,27 +34,33 @@ def _import_a_stem(imp: str) -> Optional[str]:
 
 
 def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
-    """Rankea los archivos del mapa por relevancia para el archivo objetivo y arma un texto compacto."""
-    stem_obj = Path(clave_obj).stem
-    dir_obj = Path(clave_obj).parent
-    imports_obj = {_import_a_stem(i) for i in mapa.get(clave_obj, {}).get("imports", [])} - {None}
+    """Rankea los archivos del mapa por relevancia. Tolerante a clave_obj vacío (Modo Global)."""
+    stem_obj = Path(clave_obj).stem if clave_obj else ""
+    dir_obj = Path(clave_obj).parent if clave_obj else None
+    imports_obj = {_import_a_stem(i) for i in mapa.get(clave_obj, {}).get("imports", [])} - {None} if clave_obj else set()
     palabras = _palabras(instruccion + " " + extra)
 
     puntuados = []
     for ruta, info in mapa.items():
-        if ruta == clave_obj:
+        if clave_obj and ruta == clave_obj:
             continue
         stem = Path(ruta).stem
         p = 0
-        if stem in imports_obj:
-            p += 5
-        if stem_obj in {_import_a_stem(i) for i in info.get("imports", [])}:
-            p += 4
+        
+        # Puntuación relacional (solo si hay un archivo pivote seleccionado)
+        if clave_obj:
+            if stem in imports_obj:
+                p += 5
+            if stem_obj in {_import_a_stem(i) for i in info.get("imports", [])}:
+                p += 4
+            if Path(ruta).parent == dir_obj:
+                p += 1
+                
+        # Puntuación global por coincidencia de palabras en el prompt
         if stem.lower() in palabras:
             p += 3
         p += min(len(palabras & _palabras(" ".join(info.get("signatures", [])))), 3)
-        if Path(ruta).parent == dir_obj:
-            p += 1
+        
         if p > 0:
             puntuados.append((p, ruta))
 
@@ -80,17 +86,21 @@ def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: 
             f"{mapa_txt}"
         )
     
-    # Archivo principal
-    usuario = f'<archivo ruta="{clave}">\n{codigo}\n</archivo>\n\n'
+    usuario = ""
+    # Si hay un archivo pivote, lo inyectamos
+    if clave:
+        usuario += f'ESTE ES EL ARCHIVO SELECCIONADO (ruta exacta: {clave}):\n'
+        usuario += f'<archivo ruta="{clave}">\n{codigo}\n</archivo>\n\n'
     
     # Archivos adicionales detectados en el prompt
     if adicionales:
+        usuario += "OTROS ARCHIVOS EN CONTEXTO:\n"
         for k, v in adicionales.items():
             usuario += f'<archivo ruta="{k}">\n{v}\n</archivo>\n\n'
             
     usuario += f"Instrucción: {instruccion}"
     
-    if not codigo.strip() and not adicionales:
+    if clave and not codigo.strip() and not adicionales:
         usuario += "\n\nEl archivo está VACÍO: devolvé el código completo del archivo dentro de un único bloque ```, sin SEARCH/REPLACE."
         
     return [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]
@@ -136,9 +146,16 @@ class Propuesta:
 
 
 def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool = False, extra: str = "") -> Contexto:
-    ruta_abs = proyecto.abs(ruta)
-    clave = proyecto.clave(ruta_abs)
-    original, eol = leer_archivo(ruta_abs)
+    # FASE 4.2: Soporte para Modo Global (ruta = None)
+    if ruta:
+        ruta_abs = proyecto.abs(ruta)
+        clave = proyecto.clave(ruta_abs)
+        original, eol = leer_archivo(ruta_abs)
+    else:
+        ruta_abs = None
+        clave = ""
+        original, eol = "", "\n"
+        
     convenciones = proyecto.cargar_convenciones()
     mapa = proyecto.cargar_mapa()
     
@@ -146,11 +163,9 @@ def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool
     if not sin_mapa:
         mapa_txt, usados, total = filtrar_mapa(mapa, clave, instruccion, extra)
         
-    # --- FASE 4.1: Auto-inyectar archivos mencionados en la instrucción ---
     adicionales = {}
     for k in mapa.keys():
         nombre = k.split('/')[-1]
-        # Si el nombre del archivo está en la instrucción, sumamos su código fuente al contexto
         if k != clave and (k in instruccion or nombre in instruccion):
             try:
                 txt, _ = leer_archivo(proyecto.abs(k))
@@ -180,7 +195,7 @@ def mensaje_reintento(errores_dict: dict) -> str:
 
 def generar_cambio(
     ctx: Contexto,
-    proyecto: Proyecto,  # <-- Agregamos el proyecto
+    proyecto: Proyecto,
     llamar: Optional[Callable[[list], str]] = None,
     on_reintento: Optional[Callable[[int, dict], None]] = None,
 ) -> Propuesta:
@@ -189,7 +204,6 @@ def generar_cambio(
     mensajes = list(ctx.mensajes)  
     propuesta = Propuesta()
 
-    # --- FASE 4.1: Diccionario inteligente que lee del disco si el archivo no está ---
     class LectorOriginales(dict):
         def get(self, ruta, default=""):
             if ruta in self:
@@ -210,19 +224,22 @@ def generar_cambio(
         
         if not respuesta.strip():  
             propuesta.cambios = [CambioArchivo(
-                clave=ctx.clave, original=ctx.original, eol=ctx.eol, 
+                clave=ctx.clave or "proyecto", original=ctx.original, eol=ctx.eol, 
                 errores=["El modelo no devolvió ninguna respuesta (¿agotó el contexto o los tokens?)."]
             )]
             return propuesta
             
-        # Usamos nuestro nuevo lector pasándole el archivo principal pre-cargado
-        originales = LectorOriginales({ctx.clave: ctx.original})
-        
-        nuevos, errores_por_ruta, avisos_por_ruta = interpretar_respuesta_lote(respuesta, originales, ctx.clave)
+        # Si hay archivo principal, lo precargamos. Si no, arranca vacío.
+        dict_inicial = {ctx.clave: ctx.original} if ctx.clave else {}
+        originales = LectorOriginales(dict_inicial)
+            
+        # En modo global, si falla, usamos "proyecto" como nombre de referencia
+        ruta_defecto = ctx.clave or "proyecto"
+        nuevos, errores_por_ruta, avisos_por_ruta = interpretar_respuesta_lote(respuesta, originales, ruta_defecto)
 
-        # Si el modelo no generó bloques, devolvemos un error en el archivo principal
+        # Si el modelo no generó bloques, devolvemos un error en el archivo principal/proyecto
         if not nuevos and not errores_por_ruta:
-            errores_por_ruta = {ctx.clave: ["No pude interpretar la respuesta: no hay bloques SEARCH/REPLACE."]}
+            errores_por_ruta = {ruta_defecto: ["No pude interpretar la respuesta: no hay bloques SEARCH/REPLACE."]}
 
         cambios = []
         rutas_procesadas = set(nuevos.keys()) | set(errores_por_ruta.keys())

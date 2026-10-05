@@ -268,17 +268,19 @@ if ss.msg:
     ss.msg = None
 
 if not archivo_sel:
-    st.info("Elegí un archivo en la barra lateral para empezar.")
-    st.stop()
-ruta = P.abs(archivo_sel)
+    st.info("💡 **Modo Global:** No hay ningún archivo seleccionado. Podés pedirle a NINA que analice el proyecto o cree archivos nuevos.")
+    ruta = None
+    forzar = True
+    placeholder = "¿Qué querés crear o modificar en el proyecto?"
+else:
+    ruta = P.abs(archivo_sel)
+    forzar = True
+    if P.git_archivo_sucio(ruta):
+        st.warning(f"`{archivo_sel}` tiene cambios sin commitear en Git: lo que haga la IA se va a mezclar con los tuyos.")
+        forzar = st.checkbox("Entiendo el riesgo, modificar igual")
+    placeholder = f"¿Qué querés que haga la IA con {archivo_sel}?"
 
-forzar = True
-if P.git_archivo_sucio(ruta):
-    st.warning(f"`{archivo_sel}` tiene cambios sin commitear en Git: lo que haga la IA se va a mezclar con los tuyos.")
-    forzar = st.checkbox("Entiendo el riesgo, modificar igual")
-
-instruccion = st.text_area("Instrucción", height=110, label_visibility="collapsed",
-                           placeholder=f"¿Qué querés que haga la IA con {archivo_sel}?")
+instruccion = st.text_area("Instrucción", height=110, label_visibility="collapsed", placeholder=placeholder)
 generar = st.button("Generar", type="primary", disabled=not forzar)
 
 # --------------------------------- Generación --------------------------------- #
@@ -413,21 +415,33 @@ if res is not None:
         # 2. Botones de acción globales
         b1, b2, _ = st.columns([1, 1, 5])
         
-        if b1.button("Aplicar y guardar todo", type="primary", disabled=not hay_cambios_reales or ss.guardado):
-            # Validar que ningún archivo haya cambiado en disco mientras leíamos
-            archivos_sucios = [c.clave for c in rutas_a_guardar if archivo_cambio_en_disco(P.abs(c.clave), c.original)]
+        if b1.button("Aplicar y guardar todo", type="primary", disabled=not hay_cambios_reales or ss.guardado, key="btn_guardar_lote"):
+            # 1. Validar archivos sucios (ignorando los que son creaciones desde cero)
+            archivos_sucios = []
+            for c in rutas_a_guardar:
+                ruta_abs = P.abs(c.clave)
+                # Si es un archivo nuevo (original vacío) y sigue sin existir en disco, no está sucio
+                if not ruta_abs.exists() and not c.original.strip():
+                    continue
+                
+                if archivo_cambio_en_disco(ruta_abs, c.original):
+                    archivos_sucios.append(c.clave)
             
             if archivos_sucios:
                 st.error(f"Los siguientes archivos cambiaron en disco desde que se generó la propuesta: {', '.join(archivos_sucios)}. No se guardó nada: volvé a generar.")
             else:
-                # Hacer backup en lote
                 rutas_abs = [P.abs(c.clave) for c in rutas_a_guardar]
+                
+                # 2. Asegurar que las carpetas padre existan antes de intentar hacer backup o escribir
+                for ruta_abs in rutas_abs:
+                    ruta_abs.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Hacer backup en lote
                 backup = P.hacer_backup(rutas_abs)
                 
                 # Escribir todos los archivos
                 for c in rutas_a_guardar:
                     escribir_archivo(P.abs(c.clave), c.nuevo, c.eol)
-                    # Actualizamos el mapa atómicamente por cada archivo guardado (Fase 0.8)
                     P.actualizar_archivo_en_mapa(c.clave)
                     
                 ss.msg = f"{len(rutas_a_guardar)} archivo(s) guardado(s). Lote de backup: {backup.name}"
