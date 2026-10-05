@@ -192,3 +192,8 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * **Ejecución de Comandos LLM:** Permitir que el LLM proponga o ejecute (previa confirmación) comandos bash/tests de validación para probar funcionalidades directamente desde la terminal integrada.
 
 * **Micro-tareas (Checklists):** Fragmentación de planes grandes en tareas atómicas (`.ai_todo.md`) que resetean contexto para evitar alucinaciones.
+
+
+
+ANCLAR AL FINAL EL PENSAMIENTO O LA GENERACION DE CODIGO
+QUE NO SE BORREN LOS CAMBIOS A MEDIDA QUE SE AGREGAN MAS DATOS

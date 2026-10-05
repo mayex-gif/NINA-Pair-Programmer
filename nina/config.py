@@ -32,7 +32,7 @@ PROHIBIDO usar texto conversacional, saludos, explicaciones o pedir disculpas.
 PROHIBIDO usar etiquetas como <archivo> ó </archivo>.
 
 EJEMPLO DE RESPUESTA CORRECTA:
-src/app.js
+ruta/exacta/del/archivo.ext
 <<<<<<< SEARCH
 (líneas EXACTAS del archivo actual que querés cambiar)
 =======
@@ -40,7 +40,7 @@ src/app.js
 >>>>>>> REPLACE
 
 Reglas:
-- Escribí SIEMPRE la ruta del archivo justo arriba del bloque <<<<<<< SEARCH.
+- Escribí SIEMPRE la ruta exacta del archivo justo arriba del bloque <<<<<<< SEARCH, respetando el árbol del proyecto.
 - SEARCH debe copiar el código actual tal cual (espacios e indentación incluidos) y aparecer UNA sola vez en el archivo. Si hace falta, sumá 1-3 líneas de contexto para que sea único.
 - Para insertar código: usá en SEARCH una línea vecina existente y repetila en REPLACE junto con el código nuevo.
 - Para borrar código: dejá REPLACE vacío.

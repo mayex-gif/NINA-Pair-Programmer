@@ -49,9 +49,13 @@ def _lineas_parecidas(texto: str, buscar: str, max_lineas: int = 12) -> str:
 
 
 def aplicar_bloques(original: str, bloques: list):
-    texto, errores = original, []
+    # Reemplazamos los Non-Breaking Spaces por espacios normales
+    texto = original.replace("\xa0", " ")
+    errores = []
+    
     for i, (buscar, reemplazar) in enumerate(bloques, 1):
-        buscar, reemplazar = buscar.replace("\r\n", "\n"), reemplazar.replace("\r\n", "\n")
+        buscar = buscar.replace("\r\n", "\n").replace("\xa0", " ")
+        reemplazar = reemplazar.replace("\r\n", "\n").replace("\xa0", " ")
         
         # FASE 4.1: SEARCH vacío equivale a archivo nuevo o reemplazo total
         if not buscar.strip():
@@ -64,7 +68,7 @@ def aplicar_bloques(original: str, bloques: list):
         n = texto.count(buscar)
         if n == 1:
             if reemplazar == "" and texto.count(buscar + "\n") == 1:
-                texto = texto.replace(buscar + "\n", "", 1)  # borrado sin dejar línea vacía
+                texto = texto.replace(buscar + "\n", "", 1)
             else:
                 texto = texto.replace(buscar, reemplazar, 1)
         elif n > 1:

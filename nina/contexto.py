@@ -70,7 +70,7 @@ def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
     return "\n\n".join(bloques), usados, len(mapa)
 
 
-def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: str, mapa_txt: str):
+def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: str, mapa_txt: str, adicionales: dict = None):
     sistema = SISTEMA_BASE  
     if convenciones:
         sistema += f"\n\n## Convenciones del proyecto (obligatorias)\n{convenciones}"
@@ -79,12 +79,20 @@ def construir_mensajes(clave: str, codigo: str, instruccion: str, convenciones: 
             "\n\n## Mapa de archivos relacionados (solo firmas, para contexto de imports y dependencias)\n"
             f"{mapa_txt}"
         )
-    usuario = (
-        f'<archivo ruta="{clave}">\n{codigo}\n</archivo>\n\n'
-        f"Instrucción: {instruccion}"
-    )
-    if not codigo.strip():
+    
+    # Archivo principal
+    usuario = f'<archivo ruta="{clave}">\n{codigo}\n</archivo>\n\n'
+    
+    # Archivos adicionales detectados en el prompt
+    if adicionales:
+        for k, v in adicionales.items():
+            usuario += f'<archivo ruta="{k}">\n{v}\n</archivo>\n\n'
+            
+    usuario += f"Instrucción: {instruccion}"
+    
+    if not codigo.strip() and not adicionales:
         usuario += "\n\nEl archivo está VACÍO: devolvé el código completo del archivo dentro de un único bloque ```, sin SEARCH/REPLACE."
+        
     return [{"role": "system", "content": sistema}, {"role": "user", "content": usuario}]
 
 
@@ -128,16 +136,31 @@ class Propuesta:
 
 
 def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool = False, extra: str = "") -> Contexto:
-    ruta = proyecto.abs(ruta)
-    clave = proyecto.clave(ruta)
-    original, eol = leer_archivo(ruta)
+    ruta_abs = proyecto.abs(ruta)
+    clave = proyecto.clave(ruta_abs)
+    original, eol = leer_archivo(ruta_abs)
     convenciones = proyecto.cargar_convenciones()
+    mapa = proyecto.cargar_mapa()
+    
     mapa_txt, usados, total = "", 0, 0
     if not sin_mapa:
-        mapa_txt, usados, total = filtrar_mapa(proyecto.cargar_mapa(), clave, instruccion, extra)
-    mensajes = construir_mensajes(clave, original, instruccion, convenciones, mapa_txt)
+        mapa_txt, usados, total = filtrar_mapa(mapa, clave, instruccion, extra)
+        
+    # --- FASE 4.1: Auto-inyectar archivos mencionados en la instrucción ---
+    adicionales = {}
+    for k in mapa.keys():
+        nombre = k.split('/')[-1]
+        # Si el nombre del archivo está en la instrucción, sumamos su código fuente al contexto
+        if k != clave and (k in instruccion or nombre in instruccion):
+            try:
+                txt, _ = leer_archivo(proyecto.abs(k))
+                adicionales[k] = txt
+            except OSError:
+                pass
+    
+    mensajes = construir_mensajes(clave, original, instruccion, convenciones, mapa_txt, adicionales)
     tokens = estimar_tokens("".join(m["content"] for m in mensajes))
-    return Contexto(ruta, clave, original, eol, mensajes, tokens, usados, total, bool(convenciones))
+    return Contexto(ruta_abs, clave, original, eol, mensajes, tokens, usados, total, bool(convenciones))
 
 
 def mensaje_reintento(errores_dict: dict) -> str:
@@ -157,6 +180,7 @@ def mensaje_reintento(errores_dict: dict) -> str:
 
 def generar_cambio(
     ctx: Contexto,
+    proyecto: Proyecto,  # <-- Agregamos el proyecto
     llamar: Optional[Callable[[list], str]] = None,
     on_reintento: Optional[Callable[[int, dict], None]] = None,
 ) -> Propuesta:
@@ -164,7 +188,21 @@ def generar_cambio(
     llamar = llamar or stream_llm
     mensajes = list(ctx.mensajes)  
     propuesta = Propuesta()
-    
+
+    # --- FASE 4.1: Diccionario inteligente que lee del disco si el archivo no está ---
+    class LectorOriginales(dict):
+        def get(self, ruta, default=""):
+            if ruta in self:
+                return self[ruta]
+            try:
+                texto, _ = leer_archivo(proyecto.abs(ruta))
+                self[ruta] = texto
+                return texto
+            except OSError:
+                return default
+
+# -----------------------------------------------------------------------------
+
     for intento in range(1, MAX_INTENTOS + 1):
         respuesta = llamar(mensajes)
         propuesta.respuesta = respuesta
@@ -177,7 +215,9 @@ def generar_cambio(
             )]
             return propuesta
             
-        originales = {ctx.clave: ctx.original}
+        # Usamos nuestro nuevo lector pasándole el archivo principal pre-cargado
+        originales = LectorOriginales({ctx.clave: ctx.original})
+        
         nuevos, errores_por_ruta, avisos_por_ruta = interpretar_respuesta_lote(respuesta, originales, ctx.clave)
 
         # Si el modelo no generó bloques, devolvemos un error en el archivo principal
