@@ -79,3 +79,16 @@ def test_proyecto_inexistente_sale_con_error_limpio():
         assert getattr(e, "code", getattr(e, "exit_code", 1)) == 1
     else:
         raise AssertionError("debió salir con error")
+
+
+def test_refactor_reintenta_y_muestra_el_error_real(capsys):
+    """El callback de reintento recibe {ruta: [errores]}: debe imprimir el mensaje, no solo la ruta."""
+    respuestas = iter(["<<<<<<< SEARCH\nzzz\n=======\nq\n>>>>>>> REPLACE", RESPUESTA])
+    with tempfile.TemporaryDirectory() as d:
+        raiz = _proyecto(d)
+        with Simulacion(confirma=True) as sim:
+            cli.llamar_llm = lambda mensajes: next(respuestas)
+            cli.refactor("a.py", "cambiá b", False, str(raiz))
+        assert (raiz / "a.py").read_text(encoding="utf-8") == "a = 1\nb = 20\nc = 3\n"
+    salida = capsys.readouterr().out
+    assert "a.py:" in salida and "SEARCH" in salida and "Reintento automático" in salida
