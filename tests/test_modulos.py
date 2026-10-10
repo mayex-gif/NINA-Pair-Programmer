@@ -1,6 +1,7 @@
 """
 Fase 0.2 — Tests de lo que antes NO se podía testear: Proyecto sin cwd, análisis de trazas, diff de la web,
 preparación del contexto y la importación de las interfaces (CLI y shims de compatibilidad).
+(Incluye también pruebas de la Fase 4.1 para el motor de parsing multi-archivo en bloques.py).
 """
 import json
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from nina import bloques as bl  # noqa: E402
 from nina import contexto as cx  # noqa: E402
 from nina import diff as dif  # noqa: E402
 from nina import trazas as tz  # noqa: E402
@@ -71,6 +73,55 @@ def test_preparar_contexto_de_punta_a_punta():
         assert "Usá hooks." in sistema and "# src/U.jsx" in sistema
         assert '<archivo ruta="src/App.jsx">' in usuario and "Instrucción: cambiá el color" in usuario
         assert cx.preparar_contexto(P, "src/App.jsx", "x", sin_mapa=True).mapa_usados == 0
+
+
+# ------------------------------------------------------------------ Multi-archivo (Fase 4.1)
+def test_extraer_ruta_ignora_explicaciones():
+    texto = """Claro, acá tenés la solución.
+
+En el archivo backend:
+`src/Main.java`
+"""
+    assert bl._extraer_ruta(texto, "default") == "src/Main.java"
+    
+def test_interpretar_lote_detecta_multiples_archivos():
+    respuesta = """
+src/app.js
+<<<<<<< SEARCH
+console.log(1)
+=======
+console.log(2)
+>>>>>>> REPLACE
+
+Acá hay basura que tira el LLM. Y luego otro archivo:
+
+backend/Main.java
+<<<<<<< SEARCH
+=======
+// Nuevo archivo Java
+>>>>>>> REPLACE
+"""
+    originales = {"src/app.js": "console.log(1)\n", "backend/Main.java": ""}
+    nuevos, errs, avisos = bl.interpretar_respuesta_lote(respuesta, originales, "defecto")
+    
+    assert not errs
+    assert "src/app.js" in nuevos and "console.log(2)" in nuevos["src/app.js"]
+    assert "backend/Main.java" in nuevos and "// Nuevo archivo Java" in nuevos["backend/Main.java"]
+    assert avisos.get("backend/Main.java") == ["Archivo creado desde cero."]
+
+def test_interpretar_lote_falla_si_busca_vacio_en_existente():
+    respuesta = """
+src/app.js
+<<<<<<< SEARCH
+=======
+// Esto sobreescribe el archivo!
+>>>>>>> REPLACE
+"""
+    originales = {"src/app.js": "contenido existente\n"}
+    nuevos, errs, avisos = bl.interpretar_respuesta_lote(respuesta, originales, "src/app.js")
+    
+    assert "src/app.js" in errs
+    assert any("SEARCH vacío" in e for e in errs["src/app.js"])
 
 
 # ------------------------------------------------------------------ trazas (antes dentro del comando `fix`)

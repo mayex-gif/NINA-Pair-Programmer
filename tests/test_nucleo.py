@@ -146,18 +146,18 @@ def test_auto_healing_corrige_en_el_segundo_intento():
         largos.append(len(mensajes))
         return next(respuestas)
 
-    res = cx.generar_cambio(_ctx(ORIG), llamar)
+    res = cx.generar_cambio(_ctx(ORIG), None, llamar)
     assert res.cambios[0].nuevo == "a = 1\nb = 20\nc = 3\n" and res.intentos == 2
     assert largos == [2, 4]  # el reintento suma la respuesta fallida + el mensaje de error
 
 
 def test_auto_healing_se_rinde_tras_max_intentos():
-    res = cx.generar_cambio(_ctx(ORIG), lambda m: bloque("zzz", "q"))
+    res = cx.generar_cambio(_ctx(ORIG), None, lambda m: bloque("zzz", "q"))
     assert not res.es_valida and res.intentos == config.MAX_INTENTOS and res.cambios[0].errores
 
 
 def test_respuesta_vacia_no_se_reintenta():
-    res = cx.generar_cambio(_ctx(ORIG), lambda m: "")
+    res = cx.generar_cambio(_ctx(ORIG), None, lambda m: "")
     assert not res.es_valida and res.intentos == 1 and res.cambios[0].errores
 
 
@@ -396,6 +396,13 @@ def test_escanear_y_guardar_mapa_de_forma_atomica():
         assert datos["version"] == 2 and list(datos["files"]) == ["src/a.js"]
         assert not list(d.glob("*.tmp"))
 
+def test_primer_error_de_sintaxis_informa_la_linea():
+    from nina.mapa import primer_error_sintaxis
+    assert primer_error_sintaxis("a = 1\nb = 2\n", "t.py") is None
+    assert primer_error_sintaxis("a = 1\ndef f(:\n", "t.py") == 2
+    assert primer_error_sintaxis("x", "t.desconocida") is None
+
+
 def test_detector_de_errores_de_sintaxis():
     from nina.mapa import tiene_errores_sintaxis
     codigo_ok = "def suma(a, b):\n    return a + b\n"
@@ -430,4 +437,4 @@ def test_seguridad_rutas_validas_e_invalidas():
             
         # 4. Extensión no permitida
         with pytest.raises(ValueError, match="Extensión no permitida"):
-            P.validar_ruta_segura("src/archivo.exe")
+            P.validar_ruta_segura("src/archivo.exe")

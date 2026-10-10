@@ -27,25 +27,24 @@ def separar_pensamiento(contenido: str):
 
 # --- DRIVERS POR SERVIDOR (Fase 0.4) ---
 class DriverBase:
-    def preparar_payload(self, mensajes, modelo, temperatura):
+    def preparar_payload(self, mensajes, modelo):
         return {
             "model": modelo,
             "messages": mensajes,
-            "temperature": temperatura,
             "stream": True
         }
 
 class OllamaDriver(DriverBase):
-    def preparar_payload(self, mensajes, modelo, temperatura):
-        payload = super().preparar_payload(mensajes, modelo, temperatura)
+    def preparar_payload(self, mensajes, modelo):
+        payload = super().preparar_payload(mensajes, modelo)
         # Ollama necesita num_ctx explícito para no recortar contexto grande en silencio
         ctx_size = gestor_config.perfil_actual.get("max_tokens_prompt", 12000) + 4000
         payload["options"] = {"num_ctx": ctx_size}
         return payload
 
 class LlamaCppDriver(DriverBase):
-    def preparar_payload(self, mensajes, modelo, temperatura):
-        payload = super().preparar_payload(mensajes, modelo, temperatura)
+    def preparar_payload(self, mensajes, modelo):
+        payload = super().preparar_payload(mensajes, modelo)
         payload["cache_prompt"] = True 
         payload["stream_options"] = {"include_usage": True}
         return payload
@@ -57,6 +56,27 @@ def obtener_driver(tipo: str) -> DriverBase:
         return LlamaCppDriver()
     return DriverBase()
 # ---------------------------------------
+
+def detectar_bucle(texto, tamaño_ventana=50, max_repeticiones=3):
+    """
+    Busca si los últimos 'tamaño_ventana' caracteres se repiten
+    consecutivamente demasiadas veces al final del texto.
+    """
+    if len(texto) < tamaño_ventana * max_repeticiones:
+        return False
+        
+    fragmento_final = texto[-tamaño_ventana:]
+    
+    repeticiones = 1
+    for i in range(1, max_repeticiones):
+        inicio = -(tamaño_ventana * (i + 1))
+        fin = -(tamaño_ventana * i)
+        if texto[inicio:fin] == fragmento_final:
+            repeticiones += 1
+        else:
+            break
+            
+    return repeticiones >= max_repeticiones
 
 def stream_llm(
     mensajes: list,
@@ -71,11 +91,10 @@ def stream_llm(
     destino = url or perfil["url"]
     modelo_final = modelo or perfil["modelo"]
     tipo = perfil.get("tipo", "ollama")
-    temperatura = perfil.get("temperatura", 0.1)
     api_key = perfil.get("api_key", "") # <-- Nueva lectura de API Key
 
     driver = obtener_driver(tipo)
-    payload = driver.preparar_payload(mensajes, modelo_final, temperatura)
+    payload = driver.preparar_payload(mensajes, modelo_final)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else None # <-- Header
 
     t0, t_primero, usage, timings = time.monotonic(), None, {}, {}
@@ -111,7 +130,14 @@ def stream_llm(
                         t_primero = time.monotonic()
                     razonamiento += r_frag
                     contenido += c_frag
+
+                    # Verificamos si el modelo se trabó repitiendo su propio razonamiento
+                    if razonamiento and len(razonamiento) % 300 < 10: 
+                        if detectar_bucle(razonamiento):
+                            raise ErrorLLM("🛑 Bucle degenerativo detectado en el razonamiento. Abortando y forzando reintento.")
+
                     inline, respuesta = separar_pensamiento(contenido)
+                    
                     pensamiento = (razonamiento + "\n" + inline).strip() if inline else razonamiento
                     if pensamiento != ult_pens:
                         ult_pens = pensamiento
@@ -133,12 +159,19 @@ def stream_llm(
     if on_estadisticas:
         t_fin = time.monotonic()
         salida = usage.get("completion_tokens") or timings.get("predicted_n")
+
+        tks_pensamiento = len(ult_pens) // 3 if ult_pens else 0
+        tks_codigo = (salida - tks_pensamiento) if salida and salida > tks_pensamiento else (len(ult_resp) // 3)
+
         tps = timings.get("predicted_per_second")
         if not tps and salida and t_primero and t_fin > t_primero:
             tps = salida / (t_fin - t_primero)
+
         on_estadisticas({
             "tokens_entrada": usage.get("prompt_tokens"),
             "tokens_salida": salida,
+            "tokens_pens": tks_pensamiento,
+            "tokens_cod": tks_codigo,
             "tps": tps,
             "seg_total": t_fin - t0,
             "seg_primer_token": (t_primero - t0) if t_primero else None,
