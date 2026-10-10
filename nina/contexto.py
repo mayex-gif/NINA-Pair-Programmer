@@ -34,29 +34,40 @@ def _import_a_stem(imp: str) -> Optional[str]:
 
 
 def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
-    """Rankea los archivos del mapa por relevancia. Tolerante a clave_obj vacío (Modo Global)."""
-    stem_obj = Path(clave_obj).stem if clave_obj else ""
-    dir_obj = Path(clave_obj).parent if clave_obj else None
-    imports_obj = {_import_a_stem(i) for i in mapa.get(clave_obj, {}).get("imports", [])} - {None} if clave_obj else set()
-    palabras = _palabras(instruccion + " " + extra)
+    """Rankea los archivos usando el Grafo de Dependencias (imports_exactos) y coincidencia semántica."""
+    
+    # 1. Extraemos las dependencias exactas (Profundidad 1 - Hijos) del archivo pivote
+    dependencias_directas = set(mapa.get(clave_obj, {}).get("imports_exactos", [])) if clave_obj else set()
+    
+    # 2. Encontramos dependencias inversas (Profundidad 1 - Padres que usan al pivote)
+    dependencias_inversas = set()
+    if clave_obj:
+        for ruta, info in mapa.items():
+            if clave_obj in info.get("imports_exactos", []):
+                dependencias_inversas.add(ruta)
 
+    palabras = _palabras(instruccion + " " + extra)
     puntuados = []
+    
+    dir_obj = Path(clave_obj).parent if clave_obj else None
+
     for ruta, info in mapa.items():
         if clave_obj and ruta == clave_obj:
             continue
-        stem = Path(ruta).stem
+            
         p = 0
         
-        # Puntuación relacional (solo si hay un archivo pivote seleccionado)
-        if clave_obj:
-            if stem in imports_obj:
-                p += 5
-            if stem_obj in {_import_a_stem(i) for i in info.get("imports", [])}:
-                p += 4
-            if Path(ruta).parent == dir_obj:
-                p += 1
-                
-        # Puntuación global por coincidencia de palabras en el prompt
+        # --- Puntuación Relacional Bidireccional (Fase 4.5) ---
+        if ruta in dependencias_directas:
+            p += 10  # Es un archivo que nuestro archivo pivote importa
+        if ruta in dependencias_inversas:
+            p += 8   # Es un archivo que importa a nuestro archivo pivote
+            
+        if clave_obj and Path(ruta).parent == dir_obj:
+            p += 2   # Son vecinos en la misma carpeta
+            
+        # --- Puntuación Semántica (Fallback para Modo Global o menciones explícitas) ---
+        stem = Path(ruta).stem
         if stem.lower() in palabras:
             p += 3
         p += min(len(palabras & _palabras(" ".join(info.get("signatures", [])))), 3)
@@ -64,7 +75,9 @@ def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
         if p > 0:
             puntuados.append((p, ruta))
 
+    # Ordenamos por mayor puntaje, y luego alfabéticamente para desempatar
     puntuados.sort(key=lambda x: (-x[0], x[1]))
+    
     bloques, largo, usados = [], 0, 0
     for _, ruta in puntuados[:MAX_ARCHIVOS_MAPA]:
         bloque = f"# {ruta}\n" + "\n".join(mapa[ruta].get("signatures", []))
@@ -73,6 +86,7 @@ def filtrar_mapa(mapa: dict, clave_obj: str, instruccion: str, extra: str = ""):
         bloques.append(bloque)
         largo += len(bloque)
         usados += 1
+        
     return "\n\n".join(bloques), usados, len(mapa)
 
 

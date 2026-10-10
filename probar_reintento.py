@@ -1,14 +1,5 @@
 """
-Prueba real del auto-healing contra TU servidor de modelo (usa el perfil activo de ~/.nina/config.json).
-
-Qué hace: crea un proyecto temporal con un archivo chico (no toca tus archivos), le pide un cambio al modelo y
-ESTROPEA a propósito la respuesta del primer intento para forzar el reintento. El segundo intento es una
-llamada real al modelo con el mensaje de error que arma NINA. Al final imprime, por intento, lo que llegó:
-razonamiento, respuesta, tiempos y las estadísticas del servidor.
-
-Uso:   python probar_reintento.py
-       python probar_reintento.py "otra instrucción"
-Pegame la salida completa.
+Prueba real del auto-healing y protección Anti-Bucles (Fase 4.6).
 """
 import json
 import re
@@ -21,8 +12,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from nina.config import MAX_INTENTOS, gestor_config  # noqa: E402
 from nina.contexto import generar_cambio, preparar_contexto  # noqa: E402
+import nina.contexto # Importado para el monkey-patch
 from nina.llm import ErrorLLM, stream_llm  # noqa: E402
 from nina.proyecto import Proyecto  # noqa: E402
+"""
+# --- MONKEY PATCH PARA SIMULAR EL BUCLE (Fase 4.6) ---
+original_interpretar = nina.contexto.interpretar_respuesta_lote
+
+def fake_interpretar(respuesta, originales, ruta_defecto):
+    if len(respuesta) > 15000:
+        # Simulamos que el parser/watchdog detectó el bucle
+        return {}, {ruta_defecto: ["Bucle degenerativo detectado: demasiada repetición."]}, {}
+    # Intento 2 normal
+    return original_interpretar(respuesta, originales, ruta_defecto)
+
+nina.contexto.interpretar_respuesta_lote = fake_interpretar
+# -----------------------------------------------------
+"""
 
 CODIGO = '''def total(items):
     suma = 0
@@ -30,14 +36,12 @@ CODIGO = '''def total(items):
         suma = suma + i
     return suma
 
-
 def promedio(items):
     return total(items) / len(items)
 '''
 INSTRUCCION = sys.argv[1] if len(sys.argv) > 1 else "En promedio(), devolvé 0 si la lista está vacía en vez de dividir por cero."
 
 intentos = []
-
 
 def llamar(mensajes):
     n = len(intentos) + 1
@@ -57,19 +61,27 @@ def llamar(mensajes):
         reg["stats"] = s
 
     print(f"\n--- Intento {n}: enviando {len(mensajes)} mensajes al modelo... ---", flush=True)
+    
+    if n == 2:
+        msg_asistente = mensajes[-2]["content"]
+        msg_user = mensajes[-1]["content"]
+        print(f"    [VERIFICACIÓN 4.6] Longitud del historial reenviado (Asistente): {len(msg_asistente)} caracteres")
+        print(f"    [VERIFICACIÓN 4.6] Alerta inyectada al User: {msg_user[:100]}...\n", flush=True)
+
     respuesta = stream_llm(mensajes, on_fragmento=al_responder, on_pensamiento=al_pensar, on_estadisticas=al_stats)
     reg["seg"] = time.monotonic() - reg["t_ini"]
     reg["original"] = respuesta
-    if n == 1:   # forzamos el fallo: el SEARCH apunta a algo que no existe
-        respuesta = re.sub(r"(<<<<<<< SEARCH\n).*?(\n=======)", r"\1zzz_no_existe\2", respuesta, flags=re.S)
+    
+    if n == 1:
+        # FORZAMOS EL BUCLE: Generamos +16k caracteres
+        respuesta = "```python\n# Bucle infinito...\n" * 600
         reg["estropeada"] = True
-        print("    (la respuesta del intento 1 se estropeó a propósito para forzar el reintento)", flush=True)
+        print(f"    (Intento 1 reemplazado por string masivo de {len(respuesta)} caracteres para forzar recorte)", flush=True)
+        
     return respuesta
-
 
 def al_reintentar(n, errores):
     print(f"    NINA rechazó el intento {n}: {errores}", flush=True)
-
 
 def main():
     perfil = gestor_config.perfil_actual
@@ -87,22 +99,10 @@ def main():
             res = None
 
     print("\n================ RESUMEN POR INTENTO ================")
-    for r in intentos:
-        s = r["stats"] or {}
-        print(f"Intento {r['n']}: mensajes enviados={r['mensajes']} · razonamiento={len(r['pens'])} car. "
-              f"(primer razonamiento a los {r['t_pens'] if r['t_pens'] is None else round(r['t_pens'], 1)}s) · "
-              f"respuesta={len(r['resp'])} car. (primera respuesta a los {r['t_resp'] if r['t_resp'] is None else round(r['t_resp'], 1)}s) · "
-              f"total={round(r.get('seg', 0), 1)}s{' · ESTROPEADA' if r.get('estropeada') else ''}")
-        print(f"    estadísticas: {json.dumps(s, default=str)}")
-        if r["pens"]:
-            print(f"    razonamiento (primeros 200 car.): {r['pens'][:200]!r}")
-            print(f"    razonamiento (últimos 200 car.):  {r['pens'][-200:]!r}")
-        print(f"    respuesta original del modelo: {r.get('original', r['resp'])[:400]!r}")
     if res is not None:
         print(f"\nResultado: es_valida={res.es_valida} · intentos={res.intentos}")
         for c in res.cambios:
             print(f"  {c.clave}: errores={c.errores} · cambió={c.nuevo != c.original if c.nuevo is not None else None}")
-
 
 if __name__ == "__main__":
     main()

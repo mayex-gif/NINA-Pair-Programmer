@@ -16,7 +16,7 @@ from watchdog.observers import Observer
 
 from .config import EXTENSIONES_MAPA as EXTENSIONES
 from .config import NOMBRE_MAPA as ARCHIVO_MAPA
-from .mapa import PARSERS, clave, es_relevante, escanear_todo, extraer_archivo, guardar_mapa
+from .mapa import PARSERS, clave, es_relevante, escanear_todo, extraer_archivo, guardar_mapa, vincular_imports
 
 
 class MapaHandler(FileSystemEventHandler):
@@ -52,6 +52,10 @@ class MapaHandler(FileSystemEventHandler):
                     self.archivos.pop(k, None)
             elif self.archivos.pop(k, None) is not None:
                 print(f"[Watch] 🗑️  {k}")
+                
+        # FASE 4.5: Recalculamos los links rápidamente por si cambió un import
+        vincular_imports(self.archivos)
+        
         guardar_mapa(self.archivos, self.raiz)
         print(f"        Mapa actualizado ({len(self.archivos)} archivos).")
 
@@ -102,6 +106,31 @@ def main():
         observer.stop()
         print("\nDeteniendo watcher.")
     observer.join()
+
+
+# Mantenemos un registro de los observers activos para no duplicar si se llama varias veces
+_observers_activos = {}
+
+def iniciar_vigia_background(ruta_raiz: str):
+    """Lanza el watcher en un hilo secundario invisible (ideal para Streamlit)."""
+    raiz = Path(ruta_raiz).resolve()
+    
+    # Si ya hay un vigía cuidando esta carpeta, no hacemos nada
+    if raiz in _observers_activos:
+        return _observers_activos[raiz]
+        
+    print(f"🚀 Iniciando Vigía en segundo plano para: {raiz}")
+    archivos = escanear_todo(raiz)
+    guardar_mapa(archivos, raiz)
+    
+    observer = Observer()
+    observer.schedule(MapaHandler(archivos, raiz), path=str(raiz), recursive=True)
+    # Hacemos que el hilo sea "daemon" para que muera automáticamente si cerrás Streamlit
+    observer.daemon = True 
+    observer.start()
+    
+    _observers_activos[raiz] = observer
+    return observer
 
 
 if __name__ == "__main__":

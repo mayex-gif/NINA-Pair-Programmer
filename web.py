@@ -22,6 +22,7 @@ from nina.contexto import aviso_recorte, estimar_tokens, generar_cambio, prepara
 from nina.diff import colapsar, filas_alineadas
 from nina.llm import ErrorLLM, listar_modelos, stream_llm
 from nina.proyecto import Proyecto, archivo_cambio_en_disco, escribir_archivo, leer_archivo
+from nina.vigia import iniciar_vigia_background
 
 import base64
 
@@ -318,6 +319,15 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
 
 # El proyecto activo se pasa explícitamente al núcleo (ya no se cambia el directorio del proceso).
 P = Proyecto(ss.proyecto)
+
+# --- MAGIA FASE 4.5: Vigía Integrado ---
+@st.cache_resource(show_spinner=False)
+def arrancar_vigia(ruta: str):
+    iniciar_vigia_background(ruta)
+
+# Esto se ejecuta instantáneamente. Si ya estaba corriendo, el caché de Streamlit lo ignora.
+arrancar_vigia(ss.proyecto)
+# ---------------------------------------
 
 
 def ultimo_lote_proyecto():
