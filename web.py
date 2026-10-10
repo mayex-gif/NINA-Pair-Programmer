@@ -274,7 +274,7 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
     eliminadas = sum(1 for f in todas if f[2] == "del")
     filas = colapsar(todas) if solo_cambios else todas
     primer = next((i for i, f in enumerate(filas) if f[2] in ("del", "vacio") or f[5] in ("add", "vacio")), 0)
-    alto = min(620, len(filas) * ALTO_FILA)
+    alto = min(620, len(filas) * ALTO_FILA + 15)
 
     def columna(lado: int) -> str:
         n, t, c = (0, 1, 2) if lado == 0 else (3, 4, 5)
@@ -760,7 +760,7 @@ if res is not None:
         c1, c2, c3, c4, c5 = st.columns(5)
         aprox = "" if m["exactas"] else "~"
         c1.metric("Latencia", f"{m['ttft']:.2f} s")
-        c2.metric("Entrada", f"{aprox}{m['entrada']} tks")
+        c2.metric("Entrada real", f"{aprox}{m['entrada']} tks")
         
         # ARREGLO: Leer el pensamiento del último intento real
         ultimo_pensamiento = ss.traza[-1]["pens"] if ss.traza else ""
