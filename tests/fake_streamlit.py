@@ -70,7 +70,8 @@ def instalar(control: Control, ss: SS):
 
     for tipo in ("warning", "error", "success", "info", "caption"):
         setattr(st, tipo, registrar(tipo))
-    for nombre in ("set_page_config", "markdown", "divider", "code", "metric", "iframe"):
+    for nombre in ("set_page_config", "markdown", "divider", "code", "metric", "iframe", "html", "write",
+                   "dataframe", "table", "container"):
         setattr(st, nombre, lambda *a, **k: Any_())
     st.sidebar = Any_()
     st.status = lambda *a, **k: Any_()

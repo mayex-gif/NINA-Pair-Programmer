@@ -135,13 +135,14 @@ def ejecutar(proyecto: Proyecto, archivo: str, instruccion: str, sin_mapa: bool 
     # 2. Generación con auto-healing
     console.print(f"\n[bold cyan]Enviando {escape(archivo)} a {escape(MODELO)}...[/bold cyan]\n")
 
-    def al_reintentar(intento: int, errores: list):
+    def al_reintentar(intento: int, errores: dict):
         console.print()
-        for e in errores:
-            console.print(f"[bold red]✗ {escape(e)}[/bold red]")
+        for ruta_err, lista in errores.items():
+            for e in lista:
+                console.print(f"[bold red]✗ {escape(ruta_err)}: {escape(e)}[/bold red]")
         console.print(f"\n[bold yellow]🔄 Reintento automático ({intento}/{MAX_INTENTOS - 1})...[/bold yellow]\n")
 
-    res = generar_cambio(ctx, llamar_llm, al_reintentar)
+    res = generar_cambio(ctx, proyecto, llamar_llm, al_reintentar)
     console.print()
     
     cambio = res.cambios[0] if res.cambios else None
@@ -294,4 +295,4 @@ def probar():
 
 
 if __name__ == "__main__":
-    app()
+    app()

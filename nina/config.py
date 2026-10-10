@@ -23,7 +23,7 @@ MAX_LARGO_FIRMA = 220
 # --- Contexto y Sistema ----------------------------------------------------- #
 PRESUPUESTO_MAPA_CHARS = 6000
 MAX_ARCHIVOS_MAPA = 30
-MAX_INTENTOS = int(os.getenv("AI_MAX_INTENTOS", "3"))
+MAX_INTENTOS = int(os.getenv("AI_MAX_INTENTOS", "5"))
 
 SISTEMA_BASE = """Sos un asistente de Pair Programming experto. Podés modificar múltiples archivos o crear archivos nuevos.
 
@@ -47,7 +47,15 @@ Reglas:
 - Para CREAR un archivo nuevo o reemplazar uno entero: dejá SEARCH vacío.
 - Podés usar varios bloques, en el orden en que aparecen en el archivo.
 - No reescribas el archivo completo ni toques nada que no se haya pedido.
-- No uses bloques de Markdown (```)."""
+- No uses bloques de Markdown (```).
+"""
+"""
+REGLAS ESTRICTAS DE RAZONAMIENTO Y EJECUCIÓN:
+- Eres un ejecutor técnico decisivo. Prohibido dudar de tus propias soluciones.
+- Prohibido usar frases de auto-cuestionamiento en tu pensamiento (ej. "Wait...", "Let me think...", "Maybe the user means...").
+- Analiza el problema UNA SOLA VEZ, traza el plan de forma lineal y escribe el bloque SEARCH/REPLACE inmediatamente.
+- Si una instrucción es ambigua, asume la interpretación más lógica y técnica aplicable al código, no debatas contigo mismo sobre las posibilidades.
+"""
 
 # --- Configuración Persistente (Fase 0.4) ----------------------------------- #
 CONFIG_DIR = Path.home() / ".nina"
@@ -60,15 +68,13 @@ DEFAULT_CONFIG = {
             "tipo": "ollama",
             "url": "http://localhost:11434/v1/chat/completions",
             "modelo": "qwen2.5-coder:7b",
-            "max_tokens_prompt": 12000,
-            "temperatura": 0.1
+            "max_tokens_prompt": 12000
         },
         "Llama Server": {
             "tipo": "llama.cpp",
             "url": "http://localhost:8081/v1/chat/completions",
             "modelo": "Qwen3.6-35B-A3B-UD-Q4_K_XL",
-            "max_tokens_prompt": 12000,
-            "temperatura": 0.1
+            "max_tokens_prompt": 12000
         }
     }
 }

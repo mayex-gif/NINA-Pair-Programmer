@@ -293,6 +293,26 @@ def guardar_mapa(archivos: dict, raiz: Path):
     os.replace(tmp, destino)
 
 
+def primer_error_sintaxis(codigo: str, ruta: str):
+    """Línea (1-based) del primer nodo ERROR/faltante según tree-sitter, o None si no hay error o no hay parser."""
+    ext = os.path.splitext(ruta)[1]
+    if ext not in PARSERS:
+        return None
+    try:
+        arbol = PARSERS[ext].parse(codigo.encode('utf-8', 'replace'))
+        if not arbol.root_node.has_error:
+            return None
+        pila = [arbol.root_node]
+        while pila:
+            n = pila.pop(0)
+            if n.type == 'ERROR' or n.is_missing:
+                return n.start_point[0] + 1
+            pila[0:0] = [c for c in n.children if c.has_error or c.is_missing]
+        return 1
+    except Exception:
+        return None
+
+
 # === NUEVA FUNCIÓN (FASE 0.6) ===
 def tiene_errores_sintaxis(codigo: str, ruta: str) -> bool:
     """

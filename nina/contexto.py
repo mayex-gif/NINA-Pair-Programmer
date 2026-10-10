@@ -10,7 +10,7 @@ from typing import Callable, Optional
 from .bloques import interpretar_respuesta_lote
 from .config import MAX_ARCHIVOS_MAPA, MAX_INTENTOS, PRESUPUESTO_MAPA_CHARS, SISTEMA_BASE
 from .llm import stream_llm
-from .mapa import tiene_errores_sintaxis
+from .mapa import primer_error_sintaxis, tiene_errores_sintaxis
 from .proyecto import Proyecto, leer_archivo
 
 
@@ -195,7 +195,7 @@ def mensaje_reintento(errores_dict: dict) -> str:
 
 def generar_cambio(
     ctx: Contexto,
-    proyecto: Proyecto,
+    proyecto: Optional[Proyecto] = None,
     llamar: Optional[Callable[[list], str]] = None,
     on_reintento: Optional[Callable[[int, dict], None]] = None,
 ) -> Propuesta:
@@ -208,6 +208,8 @@ def generar_cambio(
         def get(self, ruta, default=""):
             if ruta in self:
                 return self[ruta]
+            if proyecto is None:
+                return default
             try:
                 texto, _ = leer_archivo(proyecto.abs(ruta))
                 self[ruta] = texto
@@ -252,7 +254,11 @@ def generar_cambio(
 
             if nuevo is not None:
                 if not tiene_errores_sintaxis(orig, ruta) and tiene_errores_sintaxis(nuevo, ruta):
-                    avisos.append("🚨 Advertencia de sintaxis: el código generado contiene errores estructurales (llaves sin cerrar, indentación rota, etc).")
+                    linea = primer_error_sintaxis(nuevo, ruta)
+                    donde = f" cerca de la línea {linea}" if linea else ""
+                    avisos.append(
+                        f"🚨 Posible error de sintaxis{donde} (según tree-sitter). Puede ser un falso positivo "
+                        "(p. ej. un `&` suelto en JSX): confirmalo con tu compilador antes de guardar.")
 
             cambios.append(CambioArchivo(
                 clave=ruta, original=orig, eol=ctx.eol, 
@@ -267,7 +273,14 @@ def generar_cambio(
         if intento < MAX_INTENTOS:
             if on_reintento:
                 on_reintento(intento, errores_por_ruta)
-            mensajes.append({"role": "assistant", "content": respuesta})
+
+            # FASE 4.6: Evitar reenviar respuestas gigantes en el historial
+            if len(respuesta) > 15000:  # ~5000 tokens
+                respuesta_recortada = respuesta[:1500] + f"\n\n... [TEXTO RECORTADO: {len(respuesta)} caracteres. Respuesta demasiado larga o bucle detectado] ...\n\n" + respuesta[-1500:]
+                mensajes.append({"role": "assistant", "content": respuesta_recortada})
+            else:
+                mensajes.append({"role": "assistant", "content": respuesta})
+                
             mensajes.append({"role": "user", "content": mensaje_reintento(errores_por_ruta)})
             
     return propuesta
