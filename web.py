@@ -266,6 +266,12 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
             for f in filas
         )
 
+    # Detectamos si es un archivo creado desde cero (sin contenido previo)
+    es_nuevo = not viejo.strip()
+    
+    # Renderizamos la columna izquierda solo si NO es nuevo
+    col_izq = f'<div class="col" id="izq"><div class="in">{columna(0)}</div></div>' if not es_nuevo else ''
+
     codigo = f"""
     <style>
       body {{ margin:0; background:#1a1a1a; }}
@@ -282,22 +288,26 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
       ::-webkit-scrollbar-track {{ background:#1e1e1e; }}
     </style>
     <div class="wrap">
-      <div class="col" id="izq"><div class="in">{columna(0)}</div></div>
+      {col_izq}
       <div class="col" id="der"><div class="in">{columna(1)}</div></div>
     </div>
     <script>
-      const izq = document.getElementById('izq'), der = document.getElementById('der');
+      const der = document.getElementById('der');
+      const izq = document.getElementById('izq');
       let dueno = null, timer = null;
       function sync(origen, destino) {{
-        if (dueno && dueno !== origen) return;   // ignora el evento que provoca nuestro propio scroll
+        if (!destino || (dueno && dueno !== origen)) return;
         dueno = origen;
         destino.scrollTop = origen.scrollTop; destino.scrollLeft = origen.scrollLeft;
         clearTimeout(timer); timer = setTimeout(() => dueno = null, 60);
       }}
-      izq.addEventListener('scroll', () => sync(izq, der));
-      der.addEventListener('scroll', () => sync(der, izq));
+      if (izq) {{
+          izq.addEventListener('scroll', () => sync(izq, der));
+          der.addEventListener('scroll', () => sync(der, izq));
+      }}
       const y = Math.max(0, {primer} * {ALTO_FILA} - 60);
-      izq.scrollTop = y; der.scrollTop = y;
+      if (izq) izq.scrollTop = y;
+      der.scrollTop = y;
     </script>
     """
     # iframe aislado usando data URI para evitar el warning de deprecación
