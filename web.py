@@ -257,10 +257,9 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
     eliminadas = sum(1 for f in todas if f[2] == "del")
     filas = colapsar(todas) if solo_cambios else todas
     primer = next((i for i, f in enumerate(filas) if f[2] in ("del", "vacio") or f[5] in ("add", "vacio")), 0)
-    alto = min(620, max(110, len(filas) * ALTO_FILA + 22))
-
+    alto = min(620, len(filas) * ALTO_FILA + 15)    
     def columna(lado: int) -> str:
-        n, t, c = (0, 1, 2) if lado == 0 else (3, 4, 5)
+        n, t, c = (0, 1, 2) if lado == 0 else    (3, 4, 5)
         return "".join(
             f'<div class="r {f[c]}"><span class="n">{"" if f[n] is None else f[n]}</span>{html.escape(f[t]) or " "}</div>'
             for f in filas
@@ -394,7 +393,7 @@ with st.sidebar:
             gestor_config.config["perfiles"][perfil_sel]["api_key"] = st.session_state[f"api_{perfil_sel}"]
             gestor_config.guardar()
 
-        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de texto
+        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de ren
         url_actual = st.text_input("URL", datos_perfil.get("url", ""), key=f"url_{perfil_sel}", on_change=guardar_red)
         api_key_actual = st.text_input("API Key", datos_perfil.get("api_key", ""), type="password", key=f"api_{perfil_sel}", on_change=guardar_red)
         

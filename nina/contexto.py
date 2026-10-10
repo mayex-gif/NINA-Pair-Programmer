@@ -179,6 +179,16 @@ def preparar_contexto(proyecto: Proyecto, ruta, instruccion: str, sin_mapa: bool
 
 
 def mensaje_reintento(errores_dict: dict) -> str:
+    es_bucle = any("Bucle degenerativo" in str(e) for lista in errores_dict.values() for e in lista)
+    
+    if es_bucle:
+        return (
+            "⚠️ ALERTA CRÍTICA: Tu respuesta anterior fue interrumpida porque entraste en un bucle degenerativo "
+            "(empezaste a repetir el mismo texto sin parar).\n"
+            "Por favor, REINICIA tu razonamiento. Toma un enfoque diferente, más directo y conciso. "
+            "Genera los bloques SEARCH/REPLACE de inmediato sin sobrepensar."
+        )
+
     msg = "Tu respuesta anterior no se pudo aplicar en los siguientes archivos:\n\n"
     for ruta, errs in errores_dict.items():
         msg += f"Archivo: {ruta}\n"
@@ -273,10 +283,12 @@ def generar_cambio(
         if intento < MAX_INTENTOS:
             if on_reintento:
                 on_reintento(intento, errores_por_ruta)
-
-            # FASE 4.6: Evitar reenviar respuestas gigantes en el historial
-            if len(respuesta) > 15000:  # ~5000 tokens
-                respuesta_recortada = respuesta[:1500] + f"\n\n... [TEXTO RECORTADO: {len(respuesta)} caracteres. Respuesta demasiado larga o bucle detectado] ...\n\n" + respuesta[-1500:]
+            
+            # Solo recortamos si falló específicamente por un bucle (basura repetitiva)
+            es_bucle = any("Bucle degenerativo" in str(e) for lista in errores_por_ruta.values() for e in lista)
+            
+            if es_bucle and len(respuesta) > 15000:
+                respuesta_recortada = respuesta[:1500] + f"\n\n... [TEXTO RECORTADO: {len(respuesta)} caracteres. Bucle detectado, texto descartado] ...\n\n" + respuesta[-1500:]
                 mensajes.append({"role": "assistant", "content": respuesta_recortada})
             else:
                 mensajes.append({"role": "assistant", "content": respuesta})
