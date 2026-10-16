@@ -70,7 +70,8 @@ def instalar(control: Control, ss: SS):
 
     for tipo in ("warning", "error", "success", "info", "caption"):
         setattr(st, tipo, registrar(tipo))
-    for nombre in ("set_page_config", "markdown", "divider", "code", "metric", "iframe", "html", "write",
+    st.code = registrar("code")
+    for nombre in ("set_page_config", "markdown", "divider", "metric", "iframe", "html", "write",
                    "dataframe", "table", "container"):
         setattr(st, nombre, lambda *a, **k: Any_())
     st.sidebar = Any_()
@@ -78,6 +79,7 @@ def instalar(control: Control, ss: SS):
     st.empty = lambda *a, **k: Any_()
     st.expander = lambda *a, **k: Any_()
     st.cache_data = lambda *a, **k: (lambda f: f)
+    st.cache_resource = lambda *a, **k: (lambda f: f)
 
     def stop():
         raise StopApp()
@@ -109,12 +111,17 @@ def instalar(control: Control, ss: SS):
     st.button = lambda label, **k: label in control.clicks
     st.checkbox = lambda label, value=False, **k: control.checks.get(label, value)
     st.text_area = lambda *a, **k: control.instruccion
+    st.number_input = lambda label, value=None, **k: value
     st.columns = lambda spec, **k: [Col() for _ in range(spec if isinstance(spec, int) else len(spec))]
 
     comp = types.ModuleType("streamlit.components")
     comp.__path__ = []
     v1 = types.ModuleType("streamlit.components.v1")
-    v1.html = lambda *a, **k: Any_()
+    def html_diff(*a, **k):
+        control.log.append(("diff", ""))
+        return Any_()
+    v1.html = html_diff
+    v1.iframe = html_diff          # web.py dibuja el diff con components.iframe (data URI)
     comp.v1 = v1
     st.components = comp
     previos = {k: sys.modules.get(k) for k in ("streamlit", "streamlit.components", "streamlit.components.v1")}

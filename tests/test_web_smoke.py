@@ -17,7 +17,7 @@ sys.path.insert(0, str(RAIZ))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fake_streamlit as fs  # noqa: E402
-from nina import llm  # noqa: E402
+from nina import llm, vigia  # noqa: E402
 
 BUENA = "<<<<<<< SEARCH\nb = 2\n=======\nb = 20\n>>>>>>> REPLACE"
 MALA = "<<<<<<< SEARCH\nzzz\n=======\nq\n>>>>>>> REPLACE"
@@ -42,7 +42,7 @@ def _llm_falso(respuestas):
     it = iter(respuestas)
     ultima = {"r": respuestas[-1]}
 
-    def f(mensajes, on_fragmento=None, on_pensamiento=None, url=None, modelo=None, on_estadisticas=None):
+    def f(mensajes, on_fragmento=None, on_pensamiento=None, url=None, modelo=None, on_estadisticas=None, razonar=None):
         r = next(it, ultima["r"])
         if on_pensamiento:
             on_pensamiento("pienso que hay que cambiar b")
@@ -61,6 +61,8 @@ class Escenario:
 
     def __enter__(self):
         self.cwd, self.original = os.getcwd(), llm.stream_llm
+        # el vigía en segundo plano (watchdog) no debe arrancar en los tests: escanearía y vigilaría la carpeta temporal
+        self.vigia_original, vigia.iniciar_vigia_background = vigia.iniciar_vigia_background, lambda ruta: None
         llm.stream_llm = _llm_falso(self.respuestas)
         self.tmp = tempfile.TemporaryDirectory()
         self.raiz = Path(self.tmp.name).resolve()
@@ -84,6 +86,7 @@ class Escenario:
 
     def __exit__(self, *a):
         llm.stream_llm = self.original
+        vigia.iniciar_vigia_background = self.vigia_original
         os.chdir(self.cwd)
         self.tmp.cleanup()
         return False
@@ -177,3 +180,24 @@ def test_la_web_no_se_aplica_si_el_archivo_cambio_en_disco():
         assert e.archivo.read_text(encoding="utf-8") == "EDITADO A MANO\n"
         assert not (e.raiz / ".ai_backups").exists()
         assert any(t == "error" and "Conflicto" in x for t, x in e.control.log)
+
+
+NUEVO = "mod/nuevo.py\n<<<<<<< SEARCH\n=======\nx = 1\ny = 2\n>>>>>>> REPLACE"
+
+
+def test_un_archivo_nuevo_se_muestra_solo_el_creado_y_se_guarda():
+    """Modo Global creando un archivo: se ve solo el panel con lo creado (sin "antes" vacío) y se escribe al aplicar."""
+    with Escenario([NUEVO]) as e:
+        assert e.generar("creá mod/nuevo.py") == "rerun"
+        assert e.ss.resultado.cambios[0].es_nuevo
+        assert e.click("Aplicar y guardar todo") == "rerun"
+        assert (e.raiz / "mod" / "nuevo.py").read_text(encoding="utf-8") == "x = 1\ny = 2\n"
+
+
+def test_un_archivo_existente_sigue_mostrando_el_diff():
+    with Escenario([BUENA]) as e:
+        e.ss["archivo_sel"] = "a.py"
+        e.generar()
+        e.control.log = []
+        _ejecutar(e.ss, e.control)
+        assert "diff" in [t for t, _ in e.control.log]

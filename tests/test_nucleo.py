@@ -393,7 +393,7 @@ def test_escanear_y_guardar_mapa_de_forma_atomica():
         archivos = gm.escanear_todo(d.resolve())
         gm.guardar_mapa(archivos, d.resolve())
         datos = json.loads((d / ".ai_map.json").read_text(encoding="utf-8"))
-        assert datos["version"] == 2 and list(datos["files"]) == ["src/a.js"]
+        assert datos["version"] == 3 and list(datos["files"]) == ["src/a.js"]
         assert not list(d.glob("*.tmp"))
 
 def test_primer_error_de_sintaxis_informa_la_linea():
@@ -437,4 +437,4 @@ def test_seguridad_rutas_validas_e_invalidas():
             
         # 4. Extensión no permitida
         with pytest.raises(ValueError, match="Extensión no permitida"):
-            P.validar_ruta_segura("src/archivo.exe")
+            P.validar_ruta_segura("src/archivo.exe")

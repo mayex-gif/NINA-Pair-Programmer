@@ -203,7 +203,11 @@ export default function RepomapGraph({ jsonUrl = '/.ai_map.json', refreshMs = 0 
         const fileName = partes[partes.length - 1];
         const carpeta = partes.slice(0, -1).join('/') || '.';
         const info = files[path];
-        const nFirmas = info && Array.isArray(info.signatures) ? info.signatures.length : 0;
+        const n = (clave) => (info && Array.isArray(info[clave]) ? info[clave].length : 0);
+        const nFirmas = n('signatures');
+        // mapa v3: atributos, endpoints y hooks (solo se muestran los que existen)
+        const extras = [[n('fields'), 'atributos'], [n('endpoints'), 'endpoints'], [n('hooks'), 'hooks']]
+          .filter(([c]) => c > 0).map(([c, t]) => `${c} ${t}`).join(' · ');
         const { bg, borde } = colorDe(path);
 
         return {
@@ -215,7 +219,7 @@ export default function RepomapGraph({ jsonUrl = '/.ai_map.json', refreshMs = 0 
                   {carpeta}/
                 </span>
                 <span className="font-bold text-white">{fileName}</span>
-                <span className="text-[10px] text-gray-500 mt-1">{nFirmas} firmas</span>
+                <span className="text-[10px] text-gray-500 mt-1">{nFirmas} firmas{extras ? ` · ${extras}` : ''}</span>
               </div>
             ),
           },
