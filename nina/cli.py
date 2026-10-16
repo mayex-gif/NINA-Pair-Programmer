@@ -12,6 +12,7 @@ Cada ejecución arranca de cero (sin historial) para no inflar el KV cache de la
 """
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -24,7 +25,11 @@ from rich.text import Text
 from .config import API_URL, MAX_INTENTOS, MAX_TOKENS_PROMPT, MODELO, PERFIL
 from .contexto import aviso_recorte, generar_cambio, preparar_contexto
 from .diff import diff_unificado
-from .llm import ErrorLLM, listar_modelos, stream_llm
+from . import agente as ag
+from . import gitutil
+from . import servidor as srv
+from .config import gestor_config
+from .llm import CorteLLM, ErrorLLM, listar_modelos, stream_llm
 from .proyecto import Proyecto, archivo_cambio_en_disco, escribir_archivo, leer_archivo
 from .trazas import analizar_traza, fragmento_alrededor
 
@@ -40,7 +45,7 @@ def _proyecto(raiz: str) -> Proyecto:
     return p
 
 
-def llamar_llm(mensajes: list) -> str:
+def llamar_llm(mensajes: list, razonar: Optional[bool] = None) -> str:
     """Versión CLI: muestra el razonamiento (atenuado, últimas líneas) y después la respuesta."""
     estado = {"p": "", "r": ""}
     stats = {}
@@ -67,12 +72,17 @@ def llamar_llm(mensajes: list) -> str:
                 estado["r"] = t
                 pintar(live)
 
-            resultado = stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=stats.update)
+            resultado = stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=stats.update, razonar=razonar)
         partes = []
         if stats.get("tokens_entrada"):
             partes.append(f"{stats['tokens_entrada']} tks entrada")
         if stats.get("tokens_salida"):
-            partes.append(f"{stats['tokens_salida']} tks salida")
+            aprox = "" if stats.get("pens_exactos") else "~"
+            if stats.get("tokens_pensamiento") is not None and stats.get("tokens_codigo") is not None:
+                partes.append(f"{stats['tokens_salida']} tks salida ({aprox}{stats['tokens_pensamiento']} pensamiento + "
+                              f"{aprox}{stats['tokens_codigo']} código)")
+            else:
+                partes.append(f"{stats['tokens_salida']} tks salida")
         if stats.get("tps"):
             partes.append(f"{stats['tps']:.1f} t/s")
         if stats.get("seg_primer_token") is not None:
@@ -80,6 +90,9 @@ def llamar_llm(mensajes: list) -> str:
         partes.append(f"total {stats.get('seg_total', 0):.1f}s")
         console.print(f"[dim]↳ {' · '.join(partes)}[/dim]")
         return resultado
+    except CorteLLM as e:
+        console.print(f"[bold yellow]✂ Intento cortado: {escape(str(e))}[/bold yellow]")
+        raise          # lo maneja generar_cambio (reintenta sin razonamiento)
     except ErrorLLM as e:
         console.print(f"[bold red]{escape(str(e))}[/bold red]")
         raise typer.Exit(1)
@@ -294,5 +307,66 @@ def probar():
                   f"primera respuesta a los {marcas.get('respuesta', float('nan')):.1f}s · total {time.monotonic() - t0:.1f}s[/dim]")
 
 
+@app.command()
+def servidor(
+    bat: Optional[str] = typer.Option(None, "--bat", help="Escribir un .bat con el comando (p. ej. servidor.bat)"),
+    ejecutar: bool = typer.Option(False, "--ejecutar", help="Lanzar llama-server ahora, en primer plano"),
+):
+    """Muestra (o genera / lanza) el comando de llama-server a partir del perfil activo de config: una sola fuente de verdad."""
+    perfil = gestor_config.perfil_actual
+    try:
+        if bat:
+            Path(bat).write_bytes(srv.generar_bat(perfil).encode("utf-8"))
+            console.print(f"[green]✓ Escribí {escape(bat)}[/green]")
+        elif ejecutar:
+            console.print(f"[dim]{escape(srv.linea_comando(perfil))}[/dim]")
+            raise typer.Exit(srv.lanzar(perfil))
+        else:
+            console.print(escape(srv.linea_comando(perfil)), soft_wrap=True)
+    except srv.ErrorServidor as e:
+        console.print(f"[bold red]{escape(str(e))}[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def agente(
+    objetivo: str = typer.Argument("", help="Qué construir (si ya hay plan en .nina/plan.json se reanuda sin objetivo)"),
+    proyecto_ruta: str = typer.Option(".", "--proyecto", "-C", help="Raíz del proyecto"),
+    solo_planificar: bool = typer.Option(False, "--solo-planificar", help="Genera .nina/plan.json y termina para que lo revises"),
+    reparaciones: int = typer.Option(3, "--reparaciones", help="Reintentos por tarea tras una verificación fallida"),
+    horas: float = typer.Option(4.0, "--horas", help="Tiempo máximo total"),
+):
+    """Modo headless: planifica, ejecuta cada tarea con checkpoint Git, verifica con comandos y repara. Reanudable."""
+    p = _proyecto(proyecto_ruta)
+    obj, tareas = ag.cargar_plan(p)
+    if not tareas:
+        if not objetivo:
+            console.print("[bold red]No hay plan: pasá un objetivo.[/bold red]")
+            raise typer.Exit(1)
+        console.print("[bold cyan]Planificando…[/bold cyan]")
+        try:
+            tareas = ag.planificar(objetivo, llamar_llm)
+        except (ValueError, ErrorLLM) as e:
+            console.print(f"[bold red]✗ {escape(str(e))}[/bold red]")
+            raise typer.Exit(1)
+        obj = objetivo
+        ag.guardar_plan(p, obj, tareas)
+    for t in tareas:
+        console.print(f"  [{t.estado}] {t.id} {escape(t.titulo)}  [dim]{escape(' | '.join(t.verificacion) or 'sin verificación')}[/dim]")
+    if solo_planificar:
+        console.print("[green]Plan guardado en .nina/plan.json (editalo si querés y volvé a correr `agente`).[/green]")
+        return
+    if not gitutil.inicializar(p.raiz):
+        console.print("[bold red]Hace falta git para poder revertir tareas fallidas.[/bold red]")
+        raise typer.Exit(1)
+    gitutil.checkpoint(p.raiz, "nina: estado inicial del agente")
+    res = ag.ejecutar_plan(
+        p, tareas, llamar_llm, ag.Presupuesto(reparaciones_por_tarea=reparaciones, segundos_totales=int(horas * 3600)),
+        objetivo=obj, on_evento=lambda n, d: console.print(f"[dim]{n} {escape(str(d))}[/dim]"))
+    color = "green" if res == "completo" else "yellow"
+    console.print(f"[bold {color}]Resultado: {res}[/bold {color}]  (detalle en .nina/eventos.jsonl)")
+    raise typer.Exit(0 if res == "completo" else 2)
+
+
 if __name__ == "__main__":
-    app()
+    app()
