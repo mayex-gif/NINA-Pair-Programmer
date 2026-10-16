@@ -1,4 +1,4 @@
-# NINA — Documentación y Roadmap v2.3 🚀
+# NINA — Documentación y Roadmap v2.5 🚀
 
 **Filosofía:** herramienta de *coworking* (pair programming) 100 % local y stateless. Maximiza la velocidad de inferencia y protege la caché en hardware con poca VRAM (RTX 4060 de 8 GB), dándole a la IA el contexto justo del proyecto sin arrastrar historiales de chat.
 
@@ -26,28 +26,41 @@ streamlit run web.py                # interfaz web (copiá .streamlit/config.tom
 python frontend.py refactor "ruta/archivo.jsx" "Tu instrucción"
 python frontend.py fix "stack trace"   # o sin argumento (stdin) o -p (portapapeles)
 python frontend.py deshacer "ruta/archivo.jsx"
+python frontend.py agente "objetivo"   # Fase 6: planifica, ejecuta tareas con checkpoint Git y verifica (--solo-planificar para revisar el plan)
 python frontend.py probar              # prueba conexión y muestra cómo llega el razonamiento
 python -m nina refactor ...         # equivalente a frontend.py (el paquete nina/ es el núcleo)
 # todos los comandos del CLI aceptan --proyecto/-C <raíz>; las rutas relativas se leen desde esa raíz
-pytest -q                            # esperado: 72 passed, 1 xfailed
+python frontend.py servidor            # imprime el comando de llama-server generado desde tu perfil (config.py)
+python frontend.py servidor --bat servidor.bat   # o escribe un .bat equivalente; --ejecutar lo lanza en primer plano
+python probar_reintento.py             # prueba real del auto-healing: arruina a propósito el intento 1 (ver abajo)
+pytest -q                            # esperado: 113 passed, 1 xfailed
 ```
 
-**Configuración persistente (`~/.nina/config.json`)**
-NINA gestiona los perfiles de servidor, URLs, modelos, temperatura y API Keys desde la interfaz web y los guarda en un JSON local. Las variables de entorno (`AI_PERFIL`, `AI_API_URL`, `AI_MODELO`) siguen funcionando como valores por defecto si no hay configuración previa. ⚠️ Las API Keys se guardan en texto plano (ver deuda técnica).
+**Configuración: una sola fuente de verdad (`nina/config.py` → `~/.nina/config.json`)**
+Cada perfil tiene tres secciones y lo que cambies en la interfaz web se guarda en `~/.nina/config.json` (pisa los valores por defecto de `config.py`, clave por clave):
+
+| Sección | Qué controla |
+|---|---|
+| `muestreo` | `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`. **NINA los manda en cada pedido**, así que mandan sobre cualquier valor con el que se haya lanzado el servidor. |
+| `limites` | `max_tokens_salida`, `max_tokens_pensamiento`, `detectar_bucles`, `reenviar_respuesta_hasta_tokens` (4.6) y `profundidad_mapa` (cuántos saltos de import alrededor del archivo entran al mapa; 0 = todo). |
+| `servidor` | Cómo se lanza `llama-server` (ejecutable, GGUF, contexto, `--n-cpu-moe`, caché K/V…). `python frontend.py servidor --bat servidor.bat` genera el `.bat` **desde acá**, con el mismo muestreo y el puerto tomado de la `url`: el `.bat` deja de mantenerse a mano y no puede quedar descoordinado. |
+
+Una config guardada por una versión vieja se completa sola con los valores nuevos (`completar_config`); la clave vieja `temperatura` se ignora. Las variables de entorno (`AI_PERFIL`, `AI_API_URL`, `AI_MODELO`) siguen funcionando como valores por defecto si no hay configuración previa. ⚠️ Las API Keys se guardan en texto plano (ver deuda técnica).
 
 **`.gitignore` recomendado:** `.ai_map.json` y `.ai_backups/` (la carpeta de backups ya incluye su propio `.gitignore`).
 
 ### 🖥️ Servidor de modelo de referencia (RTX 4060 8 GB)
 
-Configuración con la que se llegó a ~28 t/s con `Qwen3.6-35B-A3B` (MoE, Q4_K_XL) en `llama-server`:
+Configuración con la que se llegó a ~28 t/s con `Qwen3.6-35B-A3B` (MoE, Q4_K_XL) en `llama-server`. Ya no se escribe a mano: sale de `config.py` (`SERVIDOR_DEFECTO` + `MUESTREO_DEFECTO`) con `python frontend.py servidor`:
 
 ```
 llama-server.exe -m "%MODEL_PATH%" -np 1 -fa on -c 65536 -ctk q8_0 -ctv q8_0 ^
-  --jinja --port 8081 --temp 0.3 --top-p 0.95 --top-k 20 --min-p 0.05 ^
-  --repeat-penalty 1.05 --presence-penalty 0.0 --no-reasoning-preserve ^
+  --jinja --port 8081 --temp 0.3 --top-p 0.95 --top-k 20 --min-p 0.0 ^
+  --repeat-penalty 1.0 --presence-penalty 0.0 --no-reasoning-preserve ^
   --n-gpu-layers 999 --n-cpu-moe 34 --load-mode none
 ```
 
+* **`--repeat-penalty` en 1.0 a propósito.** Con 1.1 se vio un modelo escribir `returntotal(items)` (sin el espacio) en un REPLACE aunque su razonamiento decía `return total`. Una penalización mayor a 1 castiga repetir tokens que ya están en el contexto, y el código es repetitivo: puede comerse espacios o desviar un SEARCH que tiene que ser una copia exacta. Es una hipótesis (no se aisló con un A/B), pero para un editor SEARCH/REPLACE no hay motivo para arriesgarlo; los bucles los cortan las guardas de la 4.6.
 * En un MoE, `--n-gpu-layers 999` + `--n-cpu-moe N` manda a CPU los expertos de las primeras N capas y deja el resto en GPU. Se baja N de a 2 hasta quedar cerca de 7 GB de VRAM usada.
 * El KV cache cuantizado (`-ctk/-ctv q8_0`) requiere `-fa on`.
 * Un modelo **denso** (no MoE) se configura distinto: ahí se ajusta `-ngl`, no `--n-cpu-moe`.
@@ -56,31 +69,49 @@ llama-server.exe -m "%MODEL_PATH%" -np 1 -fa on -c 65536 -ctk q8_0 -ctv q8_0 ^
 
 | **Archivo** | **Rol** | 
 |---|---|
+| `nina/agente.py`, `nina/ejecutor.py`, `nina/gitutil.py` | Fase 6 y 4.4: lazo del agente, ejecutor con lista blanca y checkpoints Git |
+| `nina/recomendaciones.py` | Fases 5.4 y 5.7: consejos del sidebar y resumen de impactos |
 | `generar_mapa.py`, `frontend.py` | Entradas de compatibilidad (3 líneas): delegan en `nina.vigia` y `nina.cli`. Los comandos de siempre siguen funcionando. | 
 | `web.py` | Interfaz Streamlit (solo presentación). Conectada al `gestor_config` y al motor multi-archivo. | 
 | `nina/config.py` | Constantes, configuración base, Prompt Global (incluye las reglas de razonamiento) y `GestorConfig` persistente. | 
 | `nina/proyecto.py` | `Proyecto(raiz)`: rutas, mapa, convenciones, backups por lote transaccional y Git. | 
-| `nina/contexto.py` | Modelos (`Propuesta`, `CambioArchivo`), inyección dinámica de dependencias, auto-healing. | 
+| `nina/contexto.py` | Modelos (`Propuesta`, `CambioArchivo`), mapa filtrado por vecindad, inyección dinámica de dependencias, auto-healing y reintentos baratos. | 
+| `nina/grafo.py` | Resolución real de imports (Java, Python, JS/TS, HTML) y vecindad de un archivo a N saltos. | 
+| `nina/servidor.py` | Arma el comando / `.bat` de `llama-server` desde el perfil de `config.py`. | 
 | `nina/bloques.py` | Parser tolerante multi-archivo y aplicador de SEARCH/REPLACE. | 
-| `nina/llm.py` | Cliente LLM por streaming con patrón de Drivers (`Ollama`, `LlamaCpp`). | 
+| `nina/llm.py` | Cliente LLM por streaming con patrón de Drivers (`Ollama`, `LlamaCpp`), muestreo del perfil y guardas anti-bucle (`CorteLLM`). | 
 | `nina/trazas.py` | Análisis de stack traces (archivo, línea y otros archivos del proyecto). | 
 | `nina/diff.py` | Diff puramente funcional. | 
-| `nina/mapa.py` | Extractores de firmas e imports (tree-sitter + regex). | 
+| `nina/mapa.py` | Extractores del mapa v3: firmas, imports, atributos, endpoints, componentes, hooks… (tree-sitter + regex). | 
 | `nina/vigia.py` | Watcher incremental (watchdog). | 
 | `nina/cli.py` | CLI (typer + rich). | 
-| `tests/` | Suite de pruebas unitarias y de integración (73 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
+| `tests/` | Suite de pruebas unitarias y de integración (113 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
 
 **Regla de capas:** el núcleo (todo `nina/` salvo `cli.py` y `vigia.py`) no importa `typer`, `rich`, `streamlit` ni `watchdog`; un test lo vigila.
 
 ### 1. El Vigía (`nina/mapa.py` + `nina/vigia.py`)
 
 * **tree-sitter** para Java, JS/JSX, TS/TSX y Python; HTML por regex.
-* **Firmas completas** y **imports por archivo** (base del ranking).
+* **Mapa v3** (`"version": 3`). Por archivo guarda las firmas y los imports de siempre y, solo cuando existen:
+
+| Clave | Backend | Frontend |
+|---|---|---|
+| `fields` | atributos de clase con tipo y anotaciones (`User: @Id private Long id`), constantes de enum, campos de `dataclass`/`self.x` de Python | props de `interface`/`type` (`Props: onPick?: (id: number) => void`), atributos de clase TS |
+| `endpoints` | `GET /api/users/{id}` (Spring: prefijo de clase + mapping del método; FastAPI/Flask: decoradores) | — |
+| `exports`, `components` | — | lo que exporta el archivo y los componentes con sus props (`UserCard({ user, onPick }: Props)`) |
+| `hooks`, `renders`, `api` | — | hooks usados (`useState`, `useUsers`), componentes que renderiza y URLs que consume (`/api/users/`) |
+
+  Un mapa v2 sigue funcionando (esas claves simplemente no están); para enriquecerlo, `python generar_mapa.py --una-vez`.
 * **Watcher incremental con debounce (0,5 s).**
+
+#### Qué parte del mapa recibe la IA
+* **Archivo existente:** solo su **vecindad**: los archivos a hasta `profundidad_mapa` saltos de import (2 por defecto; los que importa y los que lo importan), más lo que la instrucción nombra o comparte varios identificadores. Cada bloque se rotula (`[lo importa]`, `[lo usa]`, `[a 2 saltos]`) y los más cercanos van primero. Los imports se resuelven de verdad (`nina/grafo.py`: relativos, alias `@/`, `index`, paquetes Java, módulos Python relativos), no por nombre de archivo.
+* **Archivo nuevo, vacío o Modo Global:** el **árbol entero**: los más relevantes con todo su detalle y el resto como lista de rutas, para que la IA vea dónde encaja lo nuevo.
+* Presupuesto: `PRESUPUESTO_MAPA_CHARS` (8000) para el detalle y `PRESUPUESTO_ARBOL_CHARS` (3000) para la lista de rutas; máximo 30 archivos con detalle.
 
 ### 2. El Ejecutor Stateless (`nina/contexto.py`, `bloques.py`, `llm.py`, `cli.py`)
 
-Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar configuraciones críticas. Modifica múltiples archivos a la vez en memoria, con validación de modelo de datos (`Propuesta.es_valida`) y auto-healing (3 intentos) por archivo. Si la IA necesita leer un archivo que no estaba seleccionado, lo inyecta al vuelo leyendo el disco.
+Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.stream_llm` corta la conexión si el razonamiento repite las mismas líneas (`detectar_bucle`), si supera `max_tokens_pensamiento` o si el servidor termina con `finish_reason=length`, y lanza `CorteLLM`. Un corte **no es un error fatal**: `generar_cambio` reintenta pidiendo al modelo que no razone (`chat_template_kwargs.enable_thinking=false` en llama.cpp, `think=false` en Ollama) y agrega un aviso al último mensaje del usuario. En un reintento por error de bloques, la respuesta rechazada solo se reenvía si pesa menos de `reenviar_respuesta_hasta_tokens` (64 000) **y** entra en el contexto del servidor; si no, se reemplaza por un aviso corto. Utiliza drivers específicos para inyectar configuraciones críticas. Modifica múltiples archivos a la vez en memoria, con validación de modelo de datos (`Propuesta.es_valida`) y auto-healing (`AI_MAX_INTENTOS`, 5 por defecto) por archivo. Si la IA necesita leer un archivo que no estaba seleccionado, lo inyecta al vuelo leyendo el disco.
 
 `generar_cambio(ctx, proyecto, llamar, on_reintento)`: `proyecto` es opcional (`None` = no leer otros archivos del disco); `on_reintento(n, errores)` se llama después de cada intento rechazado.
 
@@ -90,7 +121,13 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * Diff **lado a lado** sincronizado (apilable por lote de archivos), renderizado en un iframe aislado para que el scroll sincronizado y el salto al primer cambio funcionen siempre.
 * **Razonamiento y métricas persistentes:** todo lo que se ve durante la generación se guarda por intento en `session_state` (`ss.traza`) y la página se redibuja desde ahí al terminar. El razonamiento sigue visible después de guardar, descartar o tocar cualquier opción. Si cortás con "Stop", queda lo que había llegado.
 * **Reintentos visibles:** cada intento muestra su razonamiento y su respuesta (la rechazada, marcada) y hay una tabla de métricas por intento (latencia, tiempo de pensamiento, tiempo de código, tokens, velocidad).
-* **Autoscroll:** sigue el final del bloque en vivo solo mientras se genera; si subís con la rueda se suelta y aparece "↓ Seguir al final". Cronómetros en vivo y contador de tokens aproximado del prompt.
+* **Autoscroll:** sigue el final del bloque en vivo solo mientras se genera; si subís con la rueda se suelta y aparece "↓ Seguir al final". Cronómetros en vivo.
+* **Contador de tokens del prompt:** debajo del cuadro de la instrucción, `Prompt ≈ N tokens · instrucción ~X + contexto ~Y`. El contexto (sistema + convenciones + mapa + archivo) lo calcula Python; el JS solo suma lo que escribís. Se calibra solo con los tokens reales que informa el servidor. (Antes se dibujaba dentro del `textarea` y el contenedor lo recortaba.)
+* **Tokens de pensamiento y de código por separado** (métricas y tabla por intento). Si el servidor informa `reasoning_tokens` son exactos; si no, se reparten en proporción a los caracteres y se marcan con `~`. Un intento cortado muestra una estimación.
+* **Archivo nuevo:** se muestra solo el archivo creado (con número de líneas y botón de copiar), sin la ventana de cambios con el "antes" vacío. Los archivos modificados siguen con el diff lado a lado.
+* **Botones de copiar:** el código de cada archivo propuesto y, si el lote tiene más de un archivo, todos juntos con un encabezado de comentario por archivo.
+* **Barra lateral:** proyecto, archivo, **Recomendaciones** (5.7) y tu bloque de servidor/perfiles. La web **no** edita el modelo, el muestreo ni los límites: esos valores se cambian en `~/.nina/config.json` (o con `frontend.py servidor`), por decisión de diseño.
+* **Impactos del lote (5.4):** sobre los diffs, una línea con ✏️ modificado / 🆕 nuevo / ⚠️ con errores / ⏸ sin cambios por archivo.
 * Control de API Keys y perfiles de servidor.
 * Restauración transaccional (Deshacer Lote), disponible también en Modo Global.
 * Fusión a tres vías al guardar si el archivo cambió en disco mientras la IA generaba.
@@ -104,18 +141,30 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * **Fase 4.2 (Prompt Global):** interfaz liberada del archivo pivote. El motor infiere qué archivos querés tocar leyendo tu prompt e inyecta su código en el contexto.
 * **Fase 4.3 (Fusión de tres vías) — en la web:** si el archivo cambió en disco, se reaplica la respuesta cruda sobre la versión fresca; si tocaste las mismas líneas, avisa el conflicto y no escribe. (El CLI se limita a no aplicar si el archivo cambió.)
 * **Fase 5.1 (UX de generación):** razonamiento persistente y autoscroll anclado, verificados en un navegador real (Chromium + Streamlit 1.65).
-* **Fase 5.4 (parcial):** tiempos de pensamiento y de código separados, y métricas por intento. Falta la lista lateral de impactos.
+* **Fase 4.5 (hecha):** resolución real de imports (`nina/grafo.py`, port de `resolverImports` de `RepomapGraph.jsx`) y mapa limitado a la vecindad de N saltos.
+* **Fase 4.6 (hecha):** guardas anti-bucle, tope de tokens de salida y de razonamiento, reintento sin razonamiento, respuesta rechazada no reenviada si es grande, tokens de pensamiento/código separados y estadísticas de intentos cortados.
+* **Config como fuente única:** muestreo, límites y servidor por perfil; `servidor --bat` genera el `.bat`.
+* **Fase 4.4 (hecha, `nina/gitutil.py`):** `checkpoint` (commit de todo el árbol), `revertir_a`, `inicializar`, `crear_rama`. Lo usa el agente antes de cada tarea; si el proyecto no es un repo, degrada a no hacer nada. La UI web todavía no hace checkpoint al guardar (ahí ya existe el backup `.ai_backups/lote_*`).
+* **Fase 5.2 (parcial):** el contador suma el contexto real y se calibra con el servidor; `servidor.contexto_del_servidor(url)` lee `n_ctx` de `/props`. Falta mostrarlo como barra en la web.
+* **Fase 5.4 (hecha):** tiempos/tokens separados, métricas por intento, vista de archivo nuevo, copiar código y la lista de impactos del lote.
+* **Fase 5.7 (hecha, `nina/recomendaciones.py`):** el sidebar sugiere crear `CONVENTIONS.md`, generar/regenerar el mapa y ajustar el tope de prompt.
+* **Fase 6 (primera versión, `nina/agente.py` + `nina/ejecutor.py`):** `frontend.py agente "objetivo"` planifica en tareas (`.nina/plan.json`), ejecuta cada una con checkpoint Git, verifica con comandos de una lista blanca (sin shell, con timeout), repara con la salida del fallo, revierte la tarea si no lo logra y se detiene tras N fallos seguidos o al agotar el tiempo. Es reanudable y deja un registro en `.nina/eventos.jsonl`. **Probado con LLM simulado y git real; todavía no con Qwen real ni en un proyecto grande.**
+* **Fase 5.5:** el Vigía en segundo plano (`iniciar_vigia_background`, tuyo) mantiene el mapa al día; falta que la web se redibuje sola ante un cambio externo.
+* **Fase 5.3 (datos listos):** el mapa v3 ya trae atributos, endpoints, props y hooks; falta la interfaz de árbol y que `RepomapGraph.jsx` los muestre.
 
 ## 🧱 Deuda técnica detectada (arreglar antes de crecer)
 
 1. **Ranking por nombre de archivo.** `_import_a_stem` colisiona (`index`, `utils`). Requiere el resolutor avanzado de dependencias (Fase 4.5).
-2. **Sin tope contra bucles de razonamiento.** Hoy no hay `max_tokens` ni límite de razonamiento: si el modelo se queda en bucle, corre hasta llenar el contexto (`finish_reason=length`). A 28 t/s con 64k de contexto son decenas de minutos. Las reglas del prompt global ayudan pero no garantizan nada (ver Fase 4.6).
+2. ~~Sin tope contra bucles de razonamiento.~~ Resuelto en la Fase 4.6 (guardas en `llm.py`). Los umbrales por defecto (12 000 tokens de razonamiento, 10 repeticiones de una línea de 30+ caracteres) son una estimación: conviene ajustarlos con uso real.
 3. **API Keys en texto plano** en `~/.nina/config.json`.
 4. **Por verificar:** que Ollama respete `options.num_ctx` por `/v1`; en ese caso el driver podría no estar limitando el contexto.
-5. **Reintentos caros.** Primera prueba real (Qwen3.6-35B-A3B, crear un `page.tsx` de ~480 líneas): el intento 1 fue rechazado tras 368 s (8.2k tokens de salida) y el intento 2 tardó 658 s (14.7k tokens, de los cuales ~323 s fueron razonamiento). Total: 1025 s y 22.9k tokens para un archivo. Un reintento reenvía entero el intento rechazado (la entrada pasó de 1.3k a 8.6k tokens). Las estadísticas de `llama-server` llegan exactas (tokens de entrada y salida, t/s) y el razonamiento llega por `reasoning_content`.
+5. ~~Reintentos caros.~~ Atenuado en la 4.6 (la respuesta grande ya no se reenvía y tras un corte se reintenta sin razonar). Primera prueba real (Qwen3.6-35B-A3B, crear un `page.tsx` de ~480 líneas): el intento 1 fue rechazado tras 368 s (8.2k tokens de salida) y el intento 2 tardó 658 s (14.7k tokens, de los cuales ~323 s fueron razonamiento). Total: 1025 s y 22.9k tokens para un archivo. Un reintento reenvía entero el intento rechazado (la entrada pasó de 1.3k a 8.6k tokens). Las estadísticas de `llama-server` llegan exactas (tokens de entrada y salida, t/s) y el razonamiento llega por `reasoning_content`.
 6. **Falsos positivos del aviso de sintaxis.** tree-sitter-tsx marca error ante un `&` suelto en texto JSX (`<h2>A & B</h2>`), que TypeScript acepta. El aviso ahora indica la línea y aclara que puede ser un falso positivo; sigue siendo orientativo.
-7. **Temperatura enviada por NINA:** el perfil manda `temperatura` (por defecto 0.1) en cada pedido y eso pisa el `--temp` del servidor. Con modelos de razonamiento una temperatura muy baja favorece los bucles; conviene revisar `~/.nina/config.json` (o exponerla en la interfaz).
+7. ~~Temperatura enviada por NINA.~~ Ahora es `muestreo.temperature` (0.3 por defecto, editable en la interfaz) y es la que manda; el `--temp` del `.bat` solo vale como valor por defecto del servidor.
 8. **Errores de reintento:** `generar_cambio` informa `{ruta: [errores]}` a `on_reintento`; la web y el CLI mostraban solo la ruta (corregido).
+9. **NINA no detecta errores semánticos.** En una prueba real el modelo escribió `returntotal(items)` y NINA lo dio por válido: es una expresión Python sintácticamente correcta (tree-sitter no se queja) y el SEARCH coincidía. Idea para más adelante: un lint opcional (p. ej. `pyflakes`) sobre los archivos propuestos, o la auto-verificación de la Fase 6.
+10. **Mapa v2 viejo.** Un `.ai_map.json` generado antes de esta versión no trae atributos/endpoints/hooks: volver a correr `python generar_mapa.py --una-vez` (el Vigía lo va completando archivo por archivo a medida que se guardan).
+11. **Límite de la vecindad.** Con `profundidad_mapa` = 2, una dependencia a 3 saltos que la instrucción no nombra no llega a la IA. Se puede subir en la barra lateral (o poner 0 para mandar todo) y sigue valiendo mencionar el archivo en la instrucción.
 
 ---
 
@@ -123,32 +172,23 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 ### Fase 4 — Más potencia
 
-**4.4 Integración con Git**
-* Commit automático o `git stash` preventivo antes de escribir un lote.
+**4.4 Integración con Git** ✅ hecha en el agente (ver Estado). Queda: checkpoint opcional al guardar desde la web/CLI y un botón "volver al punto anterior".
 
-**4.5 Resolución real de imports y limitación de vecindad**
-* Portar resolutor indexado a Python para corregir colisiones.
-* Limitar explícitamente el árbol de importaciones inyectadas a dependencias inmediatas (profundidad 1 o 2).
+**4.5 Resolución real de imports y vecindad** ✅ hecha (ver Estado). Queda: `tsconfig.json` paths (hoy solo `@/` y `~/`), y que `_import_a_stem` de `contexto.py` (modo `profundidad_mapa = 0`) use el resolutor.
 
-**4.6 Guardas anti-bucle (NUEVA, prioridad alta)**
-* Tope de tokens de salida (`max_tokens`) y de razonamiento por intento, configurables por perfil.
-* Detector de repetición en el stream (líneas o frases que se repiten): cortar la conexión y reintentar.
-* Reintento con razonamiento desactivado (`chat_template_kwargs: {"enable_thinking": false}` en `llama-server`) o con un aviso de que la respuesta anterior se cortó por bucle.
-* Mostrar en la interfaz que el intento se cortó por bucle y cuántos tokens consumió.
-* Reintentos más baratos: no reenviar entero el intento rechazado (resumir o recortar la respuesta anterior) cuando es largo.
+**4.6 Guardas anti-bucle** ✅ hecha (ver Estado). Queda por validar con uso real: umbrales por defecto y que Ollama respete `think=false` y `options.num_ctx` por `/v1` (hoy podría ignorarlos).
 
 ### Fase 5 — Interfaz Avanzada y Visualización
 
-**5.2 Cálculo y Barra de Tokens en Vivo**
-* Hoy el contador del `textarea` es aproximado (caracteres / 3) y solo cuenta el texto de la instrucción.
-* Falta sumarle el contexto seleccionado y detectar automáticamente el contexto máximo del modelo.
+**5.2 Cálculo y Barra de Tokens en Vivo** (parcial)
+* Hecho: el contador suma instrucción + contexto y se calibra con el servidor.
+* Falta detectar automáticamente el contexto máximo del modelo (hoy sale de `servidor.contexto` si el perfil lo tiene) y mostrarlo como barra.
 
 **5.3 Árbol de Proyecto Enriquecido**
 * Reemplazar visor estático por árbol colapsable interactivo.
-* Que el árbol permita desplegar atributos, métodos, verbos HTTP (APIs), **variables utilizadas y descripciones por archivo** mapeados por Tree-sitter.
+* Que el árbol permita desplegar atributos, métodos, verbos HTTP (APIs), hooks y props: **los datos ya están en el mapa v3**; falta la interfaz (y que `RepomapGraph.jsx` los muestre). Descripciones por archivo: pendiente.
 
-**5.4 Pantalla de Revisión y Métricas Detalladas (resto)**
-* Lista lateral de impactos en lotes (✏️ modificado, 🆕 nuevo, ⚠️ error).
+**5.4 Pantalla de Revisión y Métricas Detalladas** ✅ hecha (ver Estado).
 
 **5.5 Watcher Reactivo**
 * Conectar los eventos del Watcher (`vigia.py`) directamente a la interfaz web para que el sistema (archivos y contexto) se actualice solo al detectar un cambio en el disco externo.
@@ -157,7 +197,7 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * Poder visualizar archivos `.html` (el actual y la propuesta de la IA) renderizados, además del diff.
 * Renderizarlos en un iframe con `sandbox` (sin acceso a la página de NINA): el HTML lo escribe un modelo y no debe poder tocar la interfaz.
 
-**5.7 Sección de recomendaciones en el sidebar (NUEVA)**
+**5.7 Sección de recomendaciones en el sidebar** ✅ hecha (falta el consejo de "mencioná las rutas en la instrucción")
 * Bloque al pie de la barra lateral con consejos para que el prompt rinda más, por ejemplo:
   * crear un archivo de convenciones (`CONVENTIONS.md`) en la raíz del proyecto;
   * mencionar en la instrucción las rutas de los archivos que debe usar o crear, y en qué carpeta;
@@ -165,6 +205,9 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * Idea a evaluar: que detecte si falta `CONVENTIONS.md` en el proyecto y lo sugiera.
 
 ### Fase 6 — Autonomía Delegada (Agent Loop)
+
+**Hecho (v1):** planificador → tareas → ejecutor con checkpoints → verificación → reparación → registro de eventos (ver Estado). **Falta para "Zero-to-Hero":** archivo de especificación/contrato del producto, planificador con un modelo más chico (9B) y ejecutor 35B-A3B en secuencia, descubrimiento automático del comando de test del proyecto, tareas que dependen unas de otras con replanificación, consola en la UI, y pruebas largas reales.
+
 
 * **Auto-verificación de Código:** El sistema corre comandos locales (`npm run lint`, `pytest`) tras generar cambios y auto-corrige los fallos detectados sin intervención humana.
 * **Consola Integrada:** Capacidad de escribir y ejecutar código o comandos bash en una consola propia dentro de la interfaz.
@@ -175,10 +218,14 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 ### Fase 7 — Arquitectura y Despliegue
 
-* **Gestión de Servidor Local:** Integrar la posibilidad de levantar un servidor Llama (o instancia de Ollama) directamente desde los controles internos de NINA, sin depender de consolas externas.
+* **Gestión de Servidor Local:** (hecho: `frontend.py servidor [--bat|--ejecutar]` genera/lanza el comando desde la config, y `n_ctx` se lee de `/props`). Falta el botón en la interfaz y soporte para Ollama, sin depender de consolas externas.
 * **Despliegue a la Nube (Cloud-Ready):** Documentar y adaptar la arquitectura para subir el sistema de forma segura (añadir capas de autenticación, control de multi-usuarios, Dockerización y restricciones de Path Traversal robustas para entornos VPS compartidos).
 
 ---
+
+## ⚙️ Config: qué manda
+
+`~/.nina/config.json` **manda sobre los valores por defecto de `config.py`**: `completar_config` solo agrega las claves que faltan. Si cambiás un default en `config.py` (p. ej. `"extra": ["--no-mmproj"]`) y no se refleja en `frontend.py servidor`, es porque tu `config.json` ya tiene esa clave: editá el JSON (o borrá la clave para que tome el default).
 
 ## 🧠 Reglas de razonamiento (prompt global)
 
@@ -186,6 +233,7 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 
 * Es una mitigación blanda: un modelo en modo razonamiento no siempre obedece instrucciones sobre su propio razonamiento. Conviene medir su efecto (longitud del razonamiento y cantidad de bucles con y sin las reglas) y no darlas por buenas sin esa comparación.
 * Pendiente de decidir: pedir que el razonamiento empiece con una posible respuesta y que las verificaciones se hagan todas juntas.
+* Para medirlo está `probar_reintento.py` (junto a `frontend.py`): crea un proyecto temporal, arruina a propósito el SEARCH del intento 1 y muestra, por intento, el razonamiento, la respuesta, los mensajes enviados y las estadísticas. Se corre con `python probar_reintento.py` o `python probar_reintento.py "otra instrucción"`; el resultado esperado es `es_valida=True · intentos=2`.
 
 ## 📝 Notas de trabajo (de la versión anterior)
 
@@ -194,5 +242,3 @@ Cada ejecución arranca de cero. Utiliza drivers específicos para inyectar conf
 * Razonamiento: primero una posible respuesta y verificaciones todas juntas → ver *Reglas de razonamiento*.
 * Visualizar HTML → Fase 5.6.
 * Recomendaciones en el sidebar → Fase 5.7.
-* Dividir tokens de salida con tokens de pensamiento.
-* Crear botones para copiar el codigo de cada archivo o todos los codigos juntos
