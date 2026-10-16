@@ -272,6 +272,38 @@ def clave(ruta: Path, raiz: Path) -> str:
     return ruta.resolve().relative_to(raiz).as_posix()
 
 
+def vincular_imports(archivos: dict):
+    """Fase 4.5: Convierte imports crudos en rutas absolutas del proyecto."""
+    claves = set(archivos.keys())
+    
+    for ruta, datos in archivos.items():
+        exactos = set()
+        d = os.path.dirname(ruta)
+        
+        for imp in datos.get("imports", []):
+            if not imp: continue
+            
+            # Rutas relativas (empiezan con . o ..)
+            if imp.startswith("."):
+                base = os.path.normpath(os.path.join(d, imp)).replace("\\", "/")
+                for ext in EXTENSIONES:
+                    if f"{base}{ext}" in claves:
+                        exactos.add(f"{base}{ext}")
+                    elif f"{base}/index{ext}" in claves:
+                        exactos.add(f"{base}/index{ext}")
+            
+            # Rutas absolutas o alias (@/components/...)
+            else:
+                limpio = re.sub(r"^[@~]/", "", imp.replace(".", "/"))
+                for c in claves:
+                    if c == ruta: continue
+                    if os.path.splitext(c)[0].endswith(limpio):
+                        exactos.add(c)
+                        break
+                        
+        datos["imports_exactos"] = sorted(list(exactos))
+
+
 def escanear_todo(raiz: Path) -> dict:
     archivos = {}
     for subdir, dirs, files in os.walk(raiz):
@@ -282,6 +314,9 @@ def escanear_todo(raiz: Path) -> dict:
                 datos = extraer_archivo(str(ruta))
                 if datos:
                     archivos[clave(ruta, raiz)] = datos
+                    
+    # FASE 4.5: Vinculamos el grafo antes de devolverlo
+    vincular_imports(archivos)
     return archivos
 
 

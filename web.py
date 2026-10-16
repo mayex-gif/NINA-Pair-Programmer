@@ -22,6 +22,7 @@ from nina.contexto import aviso_recorte, estimar_tokens, generar_cambio, prepara
 from nina.diff import colapsar, filas_alineadas
 from nina.llm import ErrorLLM, listar_modelos, stream_llm
 from nina.proyecto import Proyecto, archivo_cambio_en_disco, escribir_archivo, leer_archivo
+from nina.vigia import iniciar_vigia_background
 
 import base64
 
@@ -122,7 +123,7 @@ JS_NINA = r"""
   limpiezas.push(() => btn.remove());
   function botonFinal() { btn.style.display = (corriendo() && vivo() && !S.pinned) ? 'block' : 'none'; }
 
-  // 4. Contador de tokens del prompt
+  // 4. Contador de tokens desglosado (Adentro de la caja)
   function contador() {
     const ta = doc.querySelector('textarea[aria-label="Instrucción"]');
     if (!ta) return;
@@ -132,13 +133,28 @@ JS_NINA = r"""
     if (!c || !c.isConnected) {
       widget.style.position = 'relative';
       c = doc.createElement('div');
-      // Lo flotamos ADENTRO de la caja, abajo a la derecha, con fondo oscuro y bordes redondeados
-      c.style.cssText = 'position:absolute; bottom:25px; right:25px; font-size:0.75rem; color:#a0a0a0; font-weight:600; pointer-events:none; background:rgba(30,30,30,0.9); padding:2px 8px; border-radius:4px; border:1px solid #444; z-index:10;';
+      c.style.cssText = 'position:absolute; bottom:25px; right:25px; font-size:0.75rem; color:#a0a0a0; font-weight:600; pointer-events:none; background:rgba(30,30,30,0.9); padding:4px 8px; border-radius:4px; border:1px solid #444; z-index:10; display:flex; gap:8px; white-space:nowrap;';
       widget.appendChild(c);
       ta.__ncontador = c;
     }
-    const n = Math.floor(ta.value.length / 3);
-    const txt = n >= 0 ? 'Tokens aprox: ~' + n : '';
+    
+    let baseData = doc.getElementById('nina-tokens-data');
+    let tksConv = parseInt(baseData?.getAttribute('data-conv')) || 0;
+    let tksMap = parseInt(baseData?.getAttribute('data-map')) || 0;
+    let tksArch = parseInt(baseData?.getAttribute('data-arch')) || 0;
+    let tksBase = parseInt(baseData?.getAttribute('data-base')) || 0; // Total real incluyendo XML
+    
+    const promptTks = Math.floor(ta.value.length / 3);
+    const total = promptTks + tksMap + tksConv;
+    
+    let textParts = [];
+    if (promptTks >= 0) textParts.push(`Prompt: ~${promptTks}`);
+    if (tksArch > 0) textParts.push(`Archivo: ~${tksArch}`);
+    if (tksMap > 0) textParts.push(`Mapa: ~${tksMap}`);
+    if (tksConv > 0) textParts.push(`Conv: ~${tksConv}`);
+    if (total > 0) textParts.push(`TOTAL: ~${total} tks`);
+    
+    const txt = textParts.join(' | ');
     if (c.innerText !== txt) c.innerText = txt;
     if (!ta.__nbound) { ta.__nbound = true; ta.addEventListener('input', contador); }
   }
@@ -252,12 +268,13 @@ def listar_archivos(raiz: str) -> list:
 
 # ----------------------------- Diff lado a lado ------------------------------- #  
 def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
+    es_nuevo = not viejo.strip()
     todas = filas_alineadas(viejo, nuevo)
     agregadas = sum(1 for f in todas if f[5] == "add")
     eliminadas = sum(1 for f in todas if f[2] == "del")
     filas = colapsar(todas) if solo_cambios else todas
     primer = next((i for i, f in enumerate(filas) if f[2] in ("del", "vacio") or f[5] in ("add", "vacio")), 0)
-    alto = min(620, max(110, len(filas) * ALTO_FILA + 22))
+    alto = min(620, len(filas) * ALTO_FILA + 15)
 
     def columna(lado: int) -> str:
         n, t, c = (0, 1, 2) if lado == 0 else (3, 4, 5)
@@ -265,6 +282,8 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
             f'<div class="r {f[c]}"><span class="n">{"" if f[n] is None else f[n]}</span>{html.escape(f[t]) or " "}</div>'
             for f in filas
         )
+
+    col_izq = f'<div class="col" id="izq"><div class="in">{columna(0)}</div></div>' if not es_nuevo else ''
 
     codigo = f"""
     <style>
@@ -277,30 +296,78 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
       .del {{ background:rgba(190,80,80,.20); }}
       .add {{ background:rgba(90,160,100,.20); }}
       .vacio {{ background:repeating-linear-gradient(45deg,#232323,#232323 6px,#1e1e1e 6px,#1e1e1e 12px); }}
-      .sep {{ background:#262626; color:#7a7a7a; font-style:italic; text-align:center; }}
-      ::-webkit-scrollbar {{ height:10px; width:10px; }} ::-webkit-scrollbar-thumb {{ background:#3a3a3a; border-radius:5px; }}
+      
+      /* Estilos del boton copiar integrado */
+      .copy-btn {{
+          position: absolute;
+          top: 8px; right: 15px;
+          background: #2d2d2d;
+          border: 1px solid #4d4d4d;
+          color: #a0a0a0;
+          border-radius: 4px;
+          padding: 4px 10px;
+          font-size: 11px;
+          font-family: sans-serif;
+          cursor: pointer;
+          z-index: 10;
+          transition: 0.2s;
+      }}
+      .copy-btn:hover {{ background: #3d3d3d; color: #fff; }}
+      
+      ::-webkit-scrollbar {{ height:10px; width:10px; }} 
+      ::-webkit-scrollbar-thumb {{ background:#3a3a3a; border-radius:5px; }}
       ::-webkit-scrollbar-track {{ background:#1e1e1e; }}
     </style>
     <div class="wrap">
-      <div class="col" id="izq"><div class="in">{columna(0)}</div></div>
-      <div class="col" id="der"><div class="in">{columna(1)}</div></div>
+      {col_izq}
+      <div style="position:relative; flex:1; display:flex; min-width:0;">
+          <div class="col" id="der" style="width:100%;"><div class="in">{columna(1)}</div></div>
+          <button class="copy-btn" id="btn-copy">Copiar</button>
+      </div>
     </div>
+    
+    <!-- Texto puro seguro para copiar -->
+    <textarea id="raw-nuevo" style="display:none;">{html.escape(nuevo)}</textarea>
+    
     <script>
-      const izq = document.getElementById('izq'), der = document.getElementById('der');
+      const der = document.getElementById('der');
+      const izq = document.getElementById('izq');
       let dueno = null, timer = null;
       function sync(origen, destino) {{
-        if (dueno && dueno !== origen) return;   // ignora el evento que provoca nuestro propio scroll
+        if (!destino || (dueno && dueno !== origen)) return;
         dueno = origen;
         destino.scrollTop = origen.scrollTop; destino.scrollLeft = origen.scrollLeft;
         clearTimeout(timer); timer = setTimeout(() => dueno = null, 60);
       }}
-      izq.addEventListener('scroll', () => sync(izq, der));
-      der.addEventListener('scroll', () => sync(der, izq));
+      if (izq) {{
+          izq.addEventListener('scroll', () => sync(izq, der));
+          der.addEventListener('scroll', () => sync(der, izq));
+      }}
       const y = Math.max(0, {primer} * {ALTO_FILA} - 60);
-      izq.scrollTop = y; der.scrollTop = y;
+      if (izq) izq.scrollTop = y;
+      der.scrollTop = y;
+      
+      // Lógica del portapapeles
+      const btnCopy = document.getElementById('btn-copy');
+      if (btnCopy) {{
+          btnCopy.addEventListener('click', () => {{
+              const code = document.getElementById('raw-nuevo').value;
+              const temp = document.createElement('textarea');
+              temp.value = code;
+              document.body.appendChild(temp);
+              temp.select();
+              try {{
+                  document.execCommand('copy');
+                  btnCopy.innerText = 'Copiado';
+                  setTimeout(() => {{ btnCopy.innerText = 'Copiar'; }}, 2000);
+              }} catch(e) {{
+                  btnCopy.innerText = 'Error';
+              }}
+              document.body.removeChild(temp);
+          }});
+      }}
     </script>
     """
-    # iframe aislado usando data URI para evitar el warning de deprecación
     b64_html = base64.b64encode(codigo.strip().encode('utf-8')).decode('utf-8')
     components.iframe(f"data:text/html;base64,{b64_html}", height=alto + 4)
     
@@ -309,6 +376,15 @@ def renderizar_diff(viejo: str, nuevo: str, solo_cambios: bool = True):
 
 # El proyecto activo se pasa explícitamente al núcleo (ya no se cambia el directorio del proceso).
 P = Proyecto(ss.proyecto)
+
+# --- MAGIA FASE 4.5: Vigía Integrado ---
+@st.cache_resource(show_spinner=False)
+def arrancar_vigia(ruta: str):
+    iniciar_vigia_background(ruta)
+
+# Esto se ejecuta instantáneamente. Si ya estaba corriendo, el caché de Streamlit lo ignora.
+arrancar_vigia(ss.proyecto)
+# ---------------------------------------
 
 
 def ultimo_lote_proyecto():
@@ -384,7 +460,7 @@ with st.sidebar:
             gestor_config.config["perfiles"][perfil_sel]["api_key"] = st.session_state[f"api_{perfil_sel}"]
             gestor_config.guardar()
 
-        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de texto
+        # Usamos keys dinámicas (f"url_{perfil_sel}") para que al cambiar de perfil, Streamlit limpie la caja de ren
         url_actual = st.text_input("URL", datos_perfil.get("url", ""), key=f"url_{perfil_sel}", on_change=guardar_red)
         api_key_actual = st.text_input("API Key", datos_perfil.get("api_key", ""), type="password", key=f"api_{perfil_sel}", on_change=guardar_red)
         
@@ -453,6 +529,17 @@ else:
         forzar = st.checkbox("Entiendo el riesgo, modificar igual")
     placeholder = f"¿Qué querés que haga la IA con {archivo_sel}?"
 
+# === CÁLCULO DE TOKENS DESGLOSADO ===
+tks_conv = estimar_tokens(P.cargar_convenciones() or "")
+tks_arch = estimar_tokens(leer_archivo(P.abs(ruta))[0]) if ruta and P.abs(ruta).exists() else 0
+ctx_base = preparar_contexto(P, ruta, "", sin_mapa)
+    
+tks_map = 0 if sin_mapa else max(0, ctx_base.tokens - tks_conv - tks_arch - 180)
+
+# Inyectamos data-base con el token count real y total de Python
+st.markdown(f'<span id="nina-tokens-data" data-conv="{tks_conv}" data-map="{tks_map}" data-arch="{tks_arch}" data-base="{ctx_base.tokens}" style="display:none;"></span>', unsafe_allow_html=True)
+# ====================================
+
 instruccion = st.text_area("Instrucción", height=280, label_visibility="collapsed", placeholder=placeholder)
 generar = st.button("Generar", type="primary", disabled=not forzar)
 
@@ -464,8 +551,7 @@ def mostrar_cabecera():
     info = ss.ctx_info
     if not info:
         return
-    st.caption(f"Contexto ~{info['tokens']} tokens · mapa {info['mapa']} archivos · "
-               f"convenciones: {'sí' if info['conv'] else 'no'}")
+    st.caption(f"Mapa {info['mapa']} archivos · convenciones: {'sí' if info['conv'] else 'no'}")
     if info["tokens"] > MAX_TOKENS_PROMPT:
         st.warning(f"El prompt supera ~{MAX_TOKENS_PROMPT} tokens; puede degradar la calidad o la velocidad.")
     st.markdown(f"**🤖 {ss.modelo_usado}**")
@@ -533,7 +619,8 @@ if generar and not instruccion.strip():
     st.warning("Escribí una instrucción primero.")
 
 if generar and instruccion.strip():
-    limpiar_resultado(conservar_resultado=True)   # el diff anterior queda en pantalla hasta que haya uno nuevo
+    limpiar_resultado()   # descarta lo que quedó de un intento anterior
+    # limpiar_resultado(conservar_resultado=True)   # el diff anterior queda en pantalla hasta que haya uno nuevo
     ctx = preparar_contexto(P, ruta, instruccion, sin_mapa)
     perfil_actual = gestor_config.config.get("perfil_activo")
     ss.modelo_usado = gestor_config.config.get("perfiles", {}).get(perfil_actual, {}).get("modelo", "Modelo LLM")
@@ -559,6 +646,9 @@ if generar and instruccion.strip():
         reg["pens"] = t
         if reg["t0_pens"] is None:
             reg["t0_pens"] = ahora
+            # Recién ahora cambiamos la etiqueta para que el JS empiece a contar
+            w["p"].update(label=f"{prefijo(reg)}Pensando durante 0 segundos...")
+            
         if ver_pens and ahora - reg["t_pint_p"] > 0.15:
             reg["t_pint_p"] = ahora
             pintar("z_p", "pensando", t)
@@ -588,7 +678,8 @@ if generar and instruccion.strip():
         traza.append(reg)
         w.update(reg=reg, s=None, z_r=None)
         with zona:
-            w["p"] = st.status(f"{prefijo(reg)}Pensando durante 0 segundos...", expanded=ver_pens)
+            # Arranca diciendo "Esperando..." para no activar el timer JS antes de tiempo
+            w["p"] = st.status(f"{prefijo(reg)}Esperando al servidor...", expanded=ver_pens)
             with w["p"]:
                 w["z_p"] = st.empty()
             w["c"] = st.empty()
@@ -669,9 +760,13 @@ if res is not None:
         c1, c2, c3, c4, c5 = st.columns(5)
         aprox = "" if m["exactas"] else "~"
         c1.metric("Latencia", f"{m['ttft']:.2f} s")
-        c2.metric("Entrada", f"{aprox}{m['entrada']} tks")
-        tks_p = m.get("tokens_pens", len(ss.pens) // 3 if ss.pens else 0)
-        tks_c = m.get("tokens_cod", m['salida'] - tks_p if m['salida'] else 0)
+        c2.metric("Entrada real", f"{aprox}{m['entrada']} tks")
+        
+        # ARREGLO: Leer el pensamiento del último intento real
+        ultimo_pensamiento = ss.traza[-1]["pens"] if ss.traza else ""
+        tks_p = m.get("tokens_pens") or (len(ultimo_pensamiento) // 3)
+        tks_c = m.get("tokens_cod") or max(0, m['salida'] - tks_p)
+        
         c3.metric("Salida", f"{aprox}{m['salida']} tks", f"{tks_p} pens / {tks_c} cód", delta_color="off")
         c4.metric("Velocidad", f"{m['tps']:.1f} t/s" if m["tps"] else "—")
         c5.metric("Tiempo Total", f"{m['seg']:.1f} s", f"{m['intentos']} intento(s)" if m["intentos"] > 1 else None, delta_color="off")
@@ -765,6 +860,3 @@ if res is not None:
             ss.msg = "Vista limpiada." if ss.guardado else "Cambios descartados."
             limpiar_resultado()
             st.rerun()
-            
-        with st.expander("Respuesta completa del modelo"):
-            st.code(res.respuesta, language=None)
