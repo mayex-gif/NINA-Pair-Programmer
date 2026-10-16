@@ -20,7 +20,8 @@ from nina.config import (
 )
 from nina.contexto import aviso_recorte, estimar_tokens, generar_cambio, preparar_contexto
 from nina.diff import colapsar, filas_alineadas
-from nina.llm import ErrorLLM, listar_modelos, stream_llm
+from nina.llm import CorteLLM, ErrorLLM, listar_modelos, stream_llm
+from nina.recomendaciones import recomendaciones, resumen_impactos
 from nina.proyecto import Proyecto, archivo_cambio_en_disco, escribir_archivo, leer_archivo
 from nina.vigia import iniciar_vigia_background
 
@@ -142,10 +143,11 @@ JS_NINA = r"""
     let tksConv = parseInt(baseData?.getAttribute('data-conv')) || 0;
     let tksMap = parseInt(baseData?.getAttribute('data-map')) || 0;
     let tksArch = parseInt(baseData?.getAttribute('data-arch')) || 0;
-    let tksBase = parseInt(baseData?.getAttribute('data-base')) || 0; // Total real incluyendo XML
+    let tksBase = parseInt(baseData?.getAttribute('data-base')) || 0; // contexto completo (sistema + convenciones + mapa + archivo)
+    const factor = parseFloat(baseData?.getAttribute('data-factor')) || 1; // calibración con los tokens reales que informa el servidor
     
-    const promptTks = Math.floor(ta.value.length / 3);
-    const total = promptTks + tksMap + tksConv;
+    const promptTks = Math.floor(ta.value.length / 3 * factor);
+    const total = promptTks + tksBase;   // antes no contaba el archivo
     
     let textParts = [];
     if (promptTks >= 0) textParts.push(`Prompt: ~${promptTks}`);
@@ -205,7 +207,8 @@ st.markdown("""
 ss = st.session_state
 for clave, valor in {"resultado": None, "ruta": None, "msg": None, "pens": "", "metricas": None,
                      "proyecto": os.getcwd(), "campo_proyecto": os.getcwd(), "aviso": None, "guardado": False,
-                     "traza": None, "error_llm": None, "ctx_info": None, "modelo_usado": "", "ultimo_lote": None}.items():
+                     "traza": None, "error_llm": None, "ctx_info": None, "modelo_usado": "", "ultimo_lote": None,
+                     "factor_tokens": 1.0}.items():
     ss.setdefault(clave, valor)
 
 
@@ -264,6 +267,26 @@ def listar_archivos(raiz: str) -> list:
             if f.endswith(EXTENSIONES_EDITABLES):
                 salida.append(Path(subdir, f).relative_to(raiz).as_posix())
     return sorted(salida)
+
+
+LENGUAJES = {".py": "python", ".js": "javascript", ".jsx": "jsx", ".ts": "typescript", ".tsx": "tsx",
+             ".java": "java", ".html": "html", ".css": "css", ".json": "json", ".md": "markdown"}
+
+
+def lenguaje(ruta: str):
+    return LENGUAJES.get(Path(ruta).suffix.lower())
+
+
+def encabezado_archivo(ruta: str) -> str:
+    """Línea de comentario con el nombre del archivo, para separar los archivos al copiarlos todos juntos."""
+    ext = Path(ruta).suffix.lower()
+    if ext == ".py":
+        return f"# ===== {ruta} ====="
+    if ext in (".html", ".md"):
+        return f"<!-- ===== {ruta} ===== -->"
+    if ext == ".css":
+        return f"/* ===== {ruta} ===== */"
+    return f"// ===== {ruta} ====="
 
 
 # ----------------------------- Diff lado a lado ------------------------------- #  
@@ -442,6 +465,13 @@ with st.sidebar:
                                on_change=al_cambiar_archivo)
     st.caption(f"{len(archivos)} archivos de código")
 
+    _consejos = recomendaciones(P, P.cargar_mapa(), len(archivos),
+                                max_tokens_prompt=gestor_config.perfil_actual.get("max_tokens_prompt", 12000))
+    if _consejos:
+        with st.expander(f"Recomendaciones ({len(_consejos)})"):
+            for _c in _consejos:
+                st.markdown(f"- {_c}")
+
     with st.expander("Servidor"):
         nombres = list(gestor_config.config.get("perfiles", {}).keys())
         idx = nombres.index(gestor_config.config.get("perfil_activo")) if gestor_config.config.get("perfil_activo") in nombres else 0
@@ -537,7 +567,7 @@ ctx_base = preparar_contexto(P, ruta, "", sin_mapa)
 tks_map = 0 if sin_mapa else max(0, ctx_base.tokens - tks_conv - tks_arch - 180)
 
 # Inyectamos data-base con el token count real y total de Python
-st.markdown(f'<span id="nina-tokens-data" data-conv="{tks_conv}" data-map="{tks_map}" data-arch="{tks_arch}" data-base="{ctx_base.tokens}" style="display:none;"></span>', unsafe_allow_html=True)
+st.markdown(f'<span id="nina-tokens-data" data-conv="{tks_conv}" data-map="{tks_map}" data-arch="{tks_arch}" data-base="{int(ctx_base.tokens * ss.factor_tokens)}" data-factor="{ss.factor_tokens:.3f}" style="display:none;"></span>', unsafe_allow_html=True)
 # ====================================
 
 instruccion = st.text_area("Instrucción", height=280, label_visibility="collapsed", placeholder=placeholder)
@@ -565,6 +595,11 @@ def aplanar_errores(errores) -> list:
 
 
 def msg_rechazo(reg):
+    if reg.get("corte"):
+        # el mensaje ya dice el motivo ("El intento se cortó (bucle): ..."): se saca el prefijo "ruta:" y la repetición
+        texto = " | ".join(e.split(": ", 1)[-1] if e.count(": ") and e.split(": ", 1)[1].startswith("El intento se cortó") else e
+                           for e in reg["errores"])
+        return f"Intento {reg['n']} cortado, se reintenta sin razonamiento. {texto}"[:420]
     return f"Intento {reg['n']} rechazado, se reintenta contra el original: " + " | ".join(reg["errores"])[:400]
 
 
@@ -575,7 +610,9 @@ def mostrar_traza():
         if reg["estado"] == "en curso":
             st.warning(f"{pref}Interrumpido antes de terminar.")
         if reg["pens"]:
-            with st.status(f"{pref}Pensó durante {int(reg['seg_pens'])} segundos", state="complete", expanded=False):
+            etiqueta_p = (f"{pref}Razonó {int(reg['seg_pens'])} segundos y se cortó" if reg.get("corte")
+                          else f"{pref}Pensó durante {int(reg['seg_pens'])} segundos")
+            with st.status(etiqueta_p, state="error" if reg.get("corte") else "complete", expanded=False):
                 st.html(f'<div class="pensando">{html.escape(reg["pens"])}</div>')
         if reg["resp"]:
             malo = bool(reg["errores"]) or reg["estado"] == "error"
@@ -589,6 +626,12 @@ def mostrar_traza():
         st.error(ss.error_llm)
 
 
+def _tk(valor, exacto) -> str:
+    if valor is None:
+        return "—"
+    return f"{valor}" if exacto else f"~{valor}"
+
+
 def mostrar_metricas_intentos():
     traza = ss.traza or []
     if len(traza) < 2:
@@ -600,14 +643,13 @@ def mostrar_metricas_intentos():
         valido = ok_final and i == len(traza) - 1 and not r["errores"]
         filas.append({
             "Intento": str(r["n"]),
-            "Resultado": "✅ válido" if valido else "❌ rechazado",
+            "Resultado": "✅ válido" if valido else (f"✂ cortado: {r['corte']}" if r.get("corte") else "❌ rechazado"),
             "Latencia": f"{r['ttft']:.2f} s",
             "Pensamiento": f"{r['seg_pens']:.1f} s",
             "Código": f"{r['seg_cod']:.1f} s",
             "Entrada": str(s.get("tokens_entrada") or "—"),
-            "Salida": str(s.get("tokens_salida") or "—"),
-            "Tks Pens.": str(s.get("tokens_pens") or "—"),
-            "Tks Cód.": str(s.get("tokens_cod") or "—"),
+            "Tokens pensamiento": _tk(s.get("tokens_pensamiento"), s.get("pens_exactos")),
+            "Tokens código": _tk(s.get("tokens_codigo"), s.get("pens_exactos")),
             "Velocidad": f"{s['tps']:.1f} t/s" if s.get("tps") else "—",
             "Tiempo": f"{r['seg']:.1f} s",
         })
@@ -671,10 +713,10 @@ if generar and instruccion.strip():
             reg["t_pint_r"] = ahora
             pintar("z_r", "respuesta-vivo", t)
 
-    def llamar(mensajes):
+    def llamar(mensajes, **opciones):
         reg = {"n": len(traza) + 1, "pens": "", "resp": "", "t_ini": time.monotonic(), "t0_pens": None,
                "t0_resp": None, "t_pint_p": 0.0, "t_pint_r": 0.0, "ttft": 0.0, "seg_pens": 0.0, "seg_cod": 0.0,
-               "seg": 0.0, "stats": None, "errores": None, "estado": "en curso"}
+               "seg": 0.0, "stats": None, "errores": None, "estado": "en curso", "corte": None}
         traza.append(reg)
         w.update(reg=reg, s=None, z_r=None)
         with zona:
@@ -688,9 +730,15 @@ if generar and instruccion.strip():
             reg["stats"] = s
 
         try:
-            salida = stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=guardar_stats)
+            salida = stream_llm(mensajes, al_responder, al_pensar, on_estadisticas=guardar_stats,
+                                razonar=opciones.get("razonar"))
             reg["estado"] = "ok"
             return salida
+        except CorteLLM as c:
+            reg["estado"], reg["corte"] = "cortado", c.motivo
+            reg["pens"], reg["resp"] = c.pensamiento or reg["pens"], c.respuesta or reg["resp"]
+            reg["stats"] = reg["stats"] or c.stats
+            raise
         except ErrorLLM:
             reg["estado"] = "error"
             raise
@@ -706,7 +754,12 @@ if generar and instruccion.strip():
             try:    # pintura final de lo que quedó sin dibujar por el throttle
                 if ver_pens and reg["pens"]:
                     pintar("z_p", "pensando", reg["pens"])
-                if reg["resp"] and w["z_r"] is not None:
+                if reg["estado"] == "cortado":
+                    w["p"].update(label=f"{prefijo(reg)}Cortado ({reg['corte']}) tras {int(reg['seg'])} segundos",
+                                  expanded=False, state="error")
+                    if w.get("s") is not None:
+                        w["s"].update(label=f"{prefijo(reg)}Respuesta cortada", expanded=False, state="error")
+                elif reg["resp"] and w["z_r"] is not None:
                     pintar("z_r", "respuesta-vivo", reg["resp"])
                     w["s"].update(label=f"{prefijo(reg)}Escribió código durante {int(reg['seg_cod'])} segundos",
                                   expanded=False, state="complete")
@@ -742,8 +795,16 @@ if generar and instruccion.strip():
         entrada = sum(s["tokens_entrada"] for s in todas_stats) if reales else ctx.tokens
         salida = sum(s["tokens_salida"] for s in todas_stats) if reales else estimar_tokens(res.respuesta + traza[-1]["pens"])
         tps = next((s["tps"] for s in reversed(todas_stats) if s.get("tps")), None)
+        t_pens = sum(s.get("tokens_pensamiento") or 0 for s in todas_stats)
+        t_cod = sum(s.get("tokens_codigo") or 0 for s in todas_stats)
         ss.metricas = {"entrada": entrada, "salida": salida, "tps": tps, "seg": seg_total,
-                       "ttft": traza[0]["ttft"], "exactas": reales, "intentos": res.intentos}
+                       "ttft": traza[0]["ttft"], "exactas": reales, "intentos": res.intentos,
+                       "tk_pens": t_pens, "tk_cod": t_cod,
+                       "tk_exactos": bool(todas_stats) and all(s.get("pens_exactos") for s in todas_stats)}
+        # Calibración: cuánto se desvía mi estimación (caracteres / 3) de lo que midió el servidor en el primer intento
+        real = (todas_stats[0].get("tokens_entrada") if todas_stats else None)
+        if real and ctx.tokens:
+            ss.factor_tokens = min(1.5, max(0.5, real / ctx.tokens * ss.factor_tokens))
         ss.resultado, ss.ruta = res, ruta
         st.rerun()   # redibuja todo desde session_state: nada de lo mostrado depende de widgets en vivo
 
@@ -757,21 +818,19 @@ if res is not None:
     st.divider()
     m = ss.metricas
     if m:
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         aprox = "" if m["exactas"] else "~"
+        aprox_p = "" if m.get("tk_exactos") else "~"
         c1.metric("Latencia", f"{m['ttft']:.2f} s")
-        c2.metric("Entrada real", f"{aprox}{m['entrada']} tks")
-        
-        # ARREGLO: Leer el pensamiento del último intento real
-        ultimo_pensamiento = ss.traza[-1]["pens"] if ss.traza else ""
-        tks_p = m.get("tokens_pens") or (len(ultimo_pensamiento) // 3)
-        tks_c = m.get("tokens_cod") or max(0, m['salida'] - tks_p)
-        
-        c3.metric("Salida", f"{aprox}{m['salida']} tks", f"{tks_p} pens / {tks_c} cód", delta_color="off")
-        c4.metric("Velocidad", f"{m['tps']:.1f} t/s" if m["tps"] else "—")
-        c5.metric("Tiempo Total", f"{m['seg']:.1f} s", f"{m['intentos']} intento(s)" if m["intentos"] > 1 else None, delta_color="off")
+        c2.metric("Entrada", f"{aprox}{m['entrada']} tks")
+        c3.metric("Pensamiento", f"{aprox_p}{m.get('tk_pens', 0)} tks")
+        c4.metric("Código", f"{aprox_p}{m.get('tk_cod', 0)} tks")
+        c5.metric("Velocidad", f"{m['tps']:.1f} t/s" if m["tps"] else "—")
+        c6.metric("Tiempo Total", f"{m['seg']:.1f} s", f"{m['intentos']} intento(s)" if m["intentos"] > 1 else None, delta_color="off")
         if not m["exactas"]:
             st.caption("El servidor no informó el conteo de tokens: los valores con ~ son estimados.")
+        elif not m.get("tk_exactos"):
+            st.caption("El servidor no separa los tokens de razonamiento: el reparto pensamiento/código (~) es proporcional a los caracteres.")
     mostrar_metricas_intentos()
 
     if not res.es_valida or not res.cambios:
@@ -784,6 +843,8 @@ if res is not None:
     else:
         st.markdown(f"### Cambios propuestos ({len(res.cambios)} archivos)")
         
+        st.caption("   ".join(resumen_impactos(res.cambios)))      # impactos del lote de un vistazo (5.4)
+
         hay_cambios_reales = False
         rutas_a_guardar = []
         
@@ -803,9 +864,16 @@ if res is not None:
             else:
                 hay_cambios_reales = True
                 rutas_a_guardar.append(cambio)
+                # Archivo nuevo: renderizar_diff muestra solo el panel derecho (sin el "antes" vacío); en ambos casos
+                # el panel trae su botón "Copiar" con el código del archivo.
                 a, b = renderizar_diff(cambio.original, cambio.nuevo, solo_cambios)
                 st.caption(f"`{cambio.clave}`   ·   +{a}  −{b}")
             st.write("") # Espaciador
+
+        # Todo el código junto (solo si hay más de un archivo)
+        if len(rutas_a_guardar) > 1:
+            with st.expander(f"Copiar el código de los {len(rutas_a_guardar)} archivos juntos"):
+                st.code("\n\n".join(f"{encabezado_archivo(c.clave)}\n{c.nuevo}" for c in rutas_a_guardar), language=None)
 
         # 2. Botones de acción globales
         b1, b2, _ = st.columns([1, 1, 5])
