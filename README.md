@@ -1,4 +1,4 @@
-# NINA — Documentación y Roadmap v2.5.3 🚀
+# NINA — Documentación y Roadmap v2.6.1 🚀
 
 **Filosofía:** herramienta de *coworking* (pair programming) 100 % local y stateless. Maximiza la velocidad de inferencia y protege la caché en hardware con poca VRAM (RTX 4060 de 8 GB), dándole a la IA el contexto justo del proyecto sin arrastrar historiales de chat.
 
@@ -33,7 +33,7 @@ python -m nina refactor ...         # equivalente a frontend.py (el paquete nina
 python frontend.py servidor            # imprime el comando de llama-server generado desde tu perfil (config.py)
 python frontend.py servidor --bat servidor.bat   # o escribe un .bat equivalente; --ejecutar lo lanza en primer plano
 python probar_reintento.py             # prueba real del auto-healing: arruina a propósito el intento 1 (ver abajo)
-pytest -q                            # esperado: 141 passed, 1 xfailed (sin modelo ni servidor; el agente se prueba con un LLM falso y git real)
+pytest -q                            # esperado: 152 passed, 1 xfailed (sin modelo ni servidor; el agente se prueba con un LLM falso y git real)
 ```
 
 **Configuración: una sola fuente de verdad (`nina/config.py` → `~/.nina/config.json`)**
@@ -85,7 +85,7 @@ llama-server.exe -m "%MODEL_PATH%" -np 1 -fa on -c 65536 -ctk q8_0 -ctv q8_0 ^
 | `nina/mapa.py` | Extractores del mapa v3: firmas, imports, atributos, endpoints, componentes, hooks… (tree-sitter + regex). | 
 | `nina/vigia.py` | Watcher incremental (watchdog). | 
 | `nina/cli.py` | CLI (typer + rich). | 
-| `tests/` | Suite de pruebas unitarias y de integración (141 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
+| `tests/` | Suite de pruebas unitarias y de integración (152 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
 
 **Regla de capas:** el núcleo (todo `nina/` salvo `cli.py` y `vigia.py`) no importa `typer`, `rich`, `streamlit` ni `watchdog`; un test lo vigila.
 
@@ -140,16 +140,19 @@ python frontend.py agente -C D:\mi_proyecto                                     
 ```
 
 1. **Planifica:** el modelo devuelve un JSON de tareas chicas (`titulo`, `instruccion`, `archivos`, `verificacion`) que se guarda en `.nina/plan.json`. Podés editarlo a mano antes de ejecutar.
-2. **Por tarea:** checkpoint Git → prompt nuevo (stateless) con convenciones, mapa y **los archivos de la tarea completos** → bloques SEARCH/REPLACE → escritura con backup (`validar_ruta_segura`: nada fuera del proyecto) → verificación.
-3. **Verificación:** cada comando corre por `nina/ejecutor.py`: lista blanca (`python`, `pytest`, `npm`, `node`, `mvn`, `git` sin `push`/`reset`/`clean`…), **sin shell** (no hay `&&`, pipes ni redirecciones), con timeout y salida recortada. `python`/`python3` se ejecutan con el intérprete que corre NINA. Si falla, la salida se manda al modelo para reparar (`--reparaciones`, 3 por defecto); si no se logra, `git reset --hard` al checkpoint y la tarea queda `fallida`.
-4. **Frenos:** se detiene tras 2 tareas fallidas seguidas o al agotar `--horas` (4). Lo hecho no se repite al reanudar.
-5. **Registro:** `.nina/plan.json` (estado por tarea), `.nina/eventos.jsonl` (cada paso con hora) y los commits `nina: antes de Txx …` / `nina: Txx …` en `git log`. La carpeta `.nina` está oculta para la vista de archivos de algunos editores: usá `dir .nina -Force`.
+2. **Aceptación (el objetivo, no solo las tareas):** el plan puede traer `aceptacion`: comandos que corren **en orden al final** sobre el proyecto terminado, con `espera` (texto que debe aparecer en la salida). Si fallan, el agente crea tareas de reparación (`A01`, `A02`…, hasta 2 rondas) con la salida del fallo. El planificador las propone, pero **lo ideal es que las escribas vos** en `.nina/plan.json`: son tu contrato de qué significa "terminado". Ejemplo: `"aceptacion": [{"comando": "python cli.py agregar pan"}, {"comando": "python cli.py listar", "espera": "pan"}]`.
+3. **Por tarea:** checkpoint Git → prompt nuevo (stateless) con convenciones, mapa y **los archivos de la tarea completos** → bloques SEARCH/REPLACE → escritura con backup (`validar_ruta_segura`: nada fuera del proyecto) → verificación.
+4. **Verificación:** cada comando corre por `nina/ejecutor.py`: lista blanca (`python`, `pytest`, `npm`, `node`, `mvn`, `git` sin `push`/`reset`/`clean`…), **sin shell** (no hay `&&`, pipes ni redirecciones), con timeout y salida recortada. `python`/`python3` se ejecutan con el intérprete que corre NINA. Si falla, la salida se manda al modelo para reparar (`--reparaciones`, 3 por defecto); si no se logra, `git reset --hard` al checkpoint y la tarea queda `fallida`.
+5. **Frenos:** se detiene tras 2 tareas fallidas seguidas o al agotar `--horas` (4). Lo hecho no se repite al reanudar.
+6. **Registro:** `.nina/plan.json` (estado por tarea), `.nina/eventos.jsonl` (cada paso con hora) y los commits `nina: antes de Txx …` / `nina: Txx …` en `git log`. La carpeta `.nina` está oculta para la vista de archivos de algunos editores: usá `dir .nina -Force`.
 
 **Límites conocidos (honestos):**
 * Si `pytest` no encuentra pruebas (código 5), la tarea pasa pero queda marcada `⚠ pytest no encontró pruebas`: no estaba verificada. (En la prueba real, el plan dejó las pruebas para la tarea siguiente y el agente reparó en vano 3 veces antes de que el modelo escribiera un test por su cuenta.)
 * La verificación es tan buena como el comando que escribe el planificador. Si el `python -c` del plan tiene un `SyntaxError` propio, se **omite** y queda anotado en `detalle` (`⚠ verificación omitida`). Y si el mismo modelo escribe el código y sus pruebas, que pasen no garantiza que estén bien: conviene leerlas.
 * Windows: el comillado de `python -c "…"` se resuelve en `ejecutor.dividir_comando` (un bug de esto hizo que las verificaciones pasaran en vacío en la v2.5/2.5.1; corregido en la 2.5.2).
-* Falta: contrato/especificación del producto, replanificación cuando una tarea cambia el plan, descubrir el comando de test del proyecto, planificador y ejecutor con modelos distintos, y probarlo en un proyecto de varios archivos.
+* **Qué puede escribir el agente:** código (`.py .js .ts .java .html .css…`) y archivos de proyecto (`.json .md .txt .toml .cfg .ini .yml .yaml`, `Dockerfile`, `.gitignore`). Nunca scripts ejecutables, `.env`, `.ai_map.json` ni `.nina/`.
+* Probado con Qwen3.6-35B-A3B real: calculadora (2 tareas), reparación por verificación fallida, **revert** de una tarea imposible (el archivo desaparece y el árbol vuelve al checkpoint) y una app de 3 módulos con pruebas y aceptación de 4 comandos (la aceptación pasó completa; ~11 min en total). En esa última, el planificador debilitó la tarea del CLI ("sin ejecutar la lógica") y el `cli.py` resultante **no hacía nada** aunque las 12 pruebas pasaban: de ahí la aceptación a nivel objetivo y que cada tarea reciba el objetivo general.
+* Falta: replanificación cuando una tarea cambia el plan, replanificación cuando una tarea cambia el plan, descubrir el comando de test del proyecto, planificador y ejecutor con modelos distintos, y probarlo en un proyecto de varios archivos.
 * Probalo siempre primero en una carpeta aparte: hace commits y `reset --hard` dentro del proyecto indicado.
 
 ## ✅ Estado de implementación

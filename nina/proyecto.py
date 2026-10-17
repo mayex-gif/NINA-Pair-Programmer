@@ -84,7 +84,7 @@ class Proyecto:
         except ValueError:
             return p.as_posix()
 
-    def validar_ruta_segura(self, ruta: Union[str, Path]) -> Path:
+    def validar_ruta_segura(self, ruta: Union[str, Path], extra_ext: tuple = (), nombres: tuple = ()) -> Path:
         """
         Garantiza que la ruta generada por la IA no escape del proyecto ni toque archivos sensibles.
         """
@@ -100,8 +100,11 @@ class Proyecto:
             if ignorada in partes:
                 raise ValueError(f"Ruta prohibida (intento de escritura en carpeta restringida '{ignorada}'): {ruta}")
                 
-        if p.suffix not in EXTENSIONES_EDITABLES:
-            raise ValueError(f"Extensión no permitida para edición ({p.suffix}). Permitidas: {', '.join(EXTENSIONES_EDITABLES)}")
+        if p.name in (".ai_map.json",):
+            raise ValueError(f"Ruta prohibida (archivo interno de NINA): {ruta}")
+        if p.suffix not in EXTENSIONES_EDITABLES and p.suffix not in extra_ext and p.name not in nombres:
+            raise ValueError(f"Extensión no permitida para edición ({p.suffix or 'sin extensión'}) en «{ruta}». "
+                             f"Permitidas: {', '.join(tuple(EXTENSIONES_EDITABLES) + tuple(extra_ext))}")
             
         return p
 

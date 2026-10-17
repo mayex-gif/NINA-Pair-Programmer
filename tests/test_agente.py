@@ -249,3 +249,110 @@ def test_el_plan_editado_a_mano_con_bom_se_lee(P):
         {"objetivo": "o", "tareas": [{"id": "T01", "titulo": "t", "instruccion": "i"}]}).encode("utf-8"))
     obj, tareas = ag.cargar_plan(P)
     assert obj == "o" and tareas[0].id == "T01"
+
+
+# ------------------------------------------------------------------ revert sin perder el registro (prueba real)
+def _editar(ruta, viejo, nuevo):
+    return f"{ruta}\n<<<<<<< SEARCH\n{viejo}=======\n{nuevo}>>>>>>> REPLACE\n"
+
+
+def test_el_revert_no_borra_el_registro_de_eventos(P):
+    """Regresión (prueba real): con el plan escrito a mano no había .gitignore, el log entraba en el checkpoint y el
+    `git reset --hard` lo devolvía a ese estado: solo quedaban `tarea_inicio` y `tarea_revertida`."""
+    (P.raiz / ".nina").mkdir()
+    (P.raiz / ".nina" / "plan.json").write_text(json.dumps({"objetivo": "o", "tareas": []}), encoding="utf-8")
+    t = ag.Tarea(id="T01", titulo="imposible", instruccion="creá calc.py", archivos=["calc.py"],
+                 verificacion=[f'{PY} -c "import sys; sys.exit(1)"'])
+    res = ag.ejecutar_plan(P, [t], lambda m: nuevo_archivo("calc.py", "def f():\n    return 3\n"),
+                           ag.Presupuesto(reparaciones_por_tarea=0, fallidas_seguidas=1), permitidos=[PY])
+    assert res == "detenido_por_fallos" and t.estado == ag.FALLIDA and not (P.raiz / "calc.py").exists()
+    eventos = [json.loads(l)["evento"] for l in (P.raiz / ".nina" / "eventos.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert eventos == ["tarea_inicio", "tarea_escrita", "verificacion", "tarea_revertida", "tarea_fin", "detenido_por_fallos"]
+
+
+# ------------------------------------------------------------------ objetivo y aceptación
+def test_cada_tarea_recibe_el_objetivo_general(P):
+    vistos = []
+    t = ag.Tarea(id="T01", titulo="x", instruccion="creá mod.py")
+    ag.ejecutar_plan(P, [t], lambda m: vistos.append(m[-1]["content"]) or nuevo_archivo("mod.py", "v = 1\n"),
+                     permitidos=[PY], objetivo="UNA APP DE TAREAS COMPLETA")
+    assert "OBJETIVO GENERAL" in vistos[0] and "UNA APP DE TAREAS COMPLETA" in vistos[0]
+
+
+def _plan_con_aceptacion(P, aceptacion):
+    ag.guardar_plan(P, "app que saluda", [], aceptacion)
+
+
+def test_aceptacion_ok_no_agrega_tareas(P):
+    _plan_con_aceptacion(P, [{"comando": f"{PY} cli.py", "espera": "hola"}])
+    t = ag.Tarea(id="T01", titulo="cli", instruccion="creá cli.py")
+    tareas = [t]
+    res = ag.ejecutar_plan(P, tareas, lambda m: nuevo_archivo("cli.py", 'print("hola")\n'), permitidos=[PY], objetivo="app que saluda")
+    assert res == "completo" and len(tareas) == 1
+
+
+def test_aceptacion_que_falla_genera_una_tarea_de_reparacion(P):
+    """El caso real: el CLI parseaba argumentos pero no hacía nada, y todas las pruebas por tarea pasaban."""
+    _plan_con_aceptacion(P, [{"comando": f"{PY} cli.py", "espera": "hola"}])
+    t = ag.Tarea(id="T01", titulo="cli", instruccion="creá cli.py", archivos=["cli.py"])
+    tareas = [t]
+    prompts = []
+
+    def llm(m):
+        prompts.append(m[-1]["content"])
+        if len(prompts) == 1:
+            return nuevo_archivo("cli.py", 'print("esqueleto")\n')
+        return _editar("cli.py", 'print("esqueleto")\n', 'print("hola")\n')
+
+    res = ag.ejecutar_plan(P, tareas, llm, permitidos=[PY], objetivo="app que saluda")
+    assert res == "completo" and [x.id for x in tareas] == ["T01", "A01"] and tareas[1].estado == ag.HECHA
+    assert "debía contener «hola»" in prompts[1] or "NO cumple el objetivo" in prompts[1]
+    assert (P.raiz / "cli.py").read_text(encoding="utf-8") == 'print("hola")\n'
+    plan = json.loads((P.raiz / ".nina" / "plan.json").read_text(encoding="utf-8"))
+    assert plan["aceptacion"] and [x["id"] for x in plan["tareas"]] == ["T01", "A01"]     # la aceptación sobrevive a los guardados
+
+
+def test_aceptacion_imposible_termina_como_fallida_y_vuelve_al_ultimo_estado_bueno(P):
+    _plan_con_aceptacion(P, [{"comando": f"{PY} cli.py", "espera": "nunca-aparece"}])
+    t = ag.Tarea(id="T01", titulo="cli", instruccion="creá cli.py", archivos=["cli.py"])
+    n = []
+
+    def llm(m):
+        n.append(1)
+        return nuevo_archivo("cli.py", 'print("a")\n') if len(n) == 1 else _editar("cli.py", 'print("a")\n', 'print("b")\n')
+
+    res = ag.ejecutar_plan(P, [t], llm, ag.Presupuesto(reparaciones_por_tarea=0, rondas_aceptacion=1), permitidos=[PY], objetivo="o")
+    assert res == "aceptacion_fallida"
+    assert (P.raiz / "cli.py").read_text(encoding="utf-8") == 'print("a")\n'      # la reparación fallida se revirtió
+
+
+def test_aceptacion_con_comando_no_permitido_se_omite(P):
+    _plan_con_aceptacion(P, [{"comando": "rm -rf /"}])
+    res = ag.ejecutar_plan(P, [ag.Tarea(id="T01", titulo="x", instruccion="i", estado=ag.HECHA)], lambda m: "", permitidos=[PY])
+    assert res == "completo"
+
+
+def test_el_planificador_devuelve_la_aceptacion_y_descarta_comandos_peligrosos():
+    resp = json.dumps({"tareas": [{"titulo": "A", "instruccion": "x"}],
+                       "aceptacion": [{"comando": "python cli.py listar", "espera": "pan"}, {"comando": "curl http://x"}, "basura"]})
+    tareas, acept = ag.planificar_con_aceptacion("o", lambda m: resp)
+    assert len(tareas) == 1 and acept == [{"comando": "python cli.py listar", "espera": "pan"}]
+
+
+# ------------------------------------------------------------------ qué puede crear el agente
+def test_el_agente_puede_crear_archivos_de_configuracion_pero_no_scripts_ni_internos(P):
+    ok = ["requirements.txt", "package.json", "pytest.ini", "README.md", "config/app.yaml", "Dockerfile", ".gitignore"]
+    for r in ok:
+        P.validar_ruta_segura(P.abs(r), ag.EXTENSIONES_AGENTE, ag.NOMBRES_AGENTE)
+    for r in ["run.sh", "inicio.bat", "x.ps1", ".env", ".ai_map.json", ".nina/plan.json", "../fuera.txt"]:
+        with pytest.raises(ValueError):
+            P.validar_ruta_segura(P.abs(r), ag.EXTENSIONES_AGENTE, ag.NOMBRES_AGENTE)
+    with pytest.raises(ValueError, match="requirements.txt"):          # sin el permiso del agente (web/CLI) sigue prohibido, y el mensaje dice cuál
+        P.validar_ruta_segura(P.abs("requirements.txt"))
+
+
+def test_el_agente_escribe_requirements_y_codigo_en_el_mismo_lote(P):
+    t = ag.Tarea(id="T01", titulo="x", instruccion="creá")
+    resp = nuevo_archivo("app.py", "x = 1\n") + nuevo_archivo("requirements.txt", "pytest\n")
+    assert ag.ejecutar_plan(P, [t], lambda m: resp, permitidos=[PY]) == "completo"
+    assert (P.raiz / "requirements.txt").read_text(encoding="utf-8") == "pytest\n"

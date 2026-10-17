@@ -54,6 +54,13 @@ def checkpoint(raiz, mensaje: str) -> Optional[str]:
     return h.stdout.strip() if h and h.returncode == 0 else None
 
 
+def dejar_de_seguir(raiz, ruta: str) -> None:
+    """Saca un archivo del índice (sin borrarlo) para que .gitignore pueda ignorarlo; silencioso si no estaba."""
+    raiz = Path(raiz)
+    if es_repo(raiz):
+        _git(raiz, "rm", "--cached", "-q", "--ignore-unmatch", "--", ruta)
+
+
 def revertir_a(raiz, hash_: str) -> bool:
     """Deja el árbol exactamente como en `hash_` (descarta cambios y archivos nuevos sin seguimiento). Destructivo."""
     raiz = Path(raiz)
