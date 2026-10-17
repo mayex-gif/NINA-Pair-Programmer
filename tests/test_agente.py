@@ -232,3 +232,20 @@ def test_verificacion_con_sintaxis_invalida_se_omite_y_se_avisa(P):
     res = ag.ejecutar_plan(P, [t2], lambda m: nuevo_archivo("mod2.py", "v = 1\n"),
                            ag.Presupuesto(reparaciones_por_tarea=0, fallidas_seguidas=1), permitidos=[PY])
     assert res == "detenido_por_fallos" and t2.estado == ag.FALLIDA
+
+
+def test_pytest_sin_pruebas_no_dispara_reparaciones_inutiles(P):
+    """Regresión (prueba real): `pytest` devolvía 5 (sin pruebas) y el agente reparaba 3 veces código que estaba bien."""
+    t = ag.Tarea(id="T01", titulo="código sin pruebas todavía", instruccion="creá mod.py", verificacion=[f"{PY} -m pytest -q"])
+    llamadas = []
+    res = ag.ejecutar_plan(P, [t], lambda m: llamadas.append(1) or nuevo_archivo("mod.py", "v = 1\n"), permitidos=[PY])
+    assert res == "completo" and t.estado == ag.HECHA and len(llamadas) == 1 and t.intentos == 1
+    assert "no encontró pruebas" in t.detalle          # se avisa: esa tarea no quedó verificada
+
+
+def test_el_plan_editado_a_mano_con_bom_se_lee(P):
+    (P.raiz / ".nina").mkdir()
+    (P.raiz / ".nina" / "plan.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(
+        {"objetivo": "o", "tareas": [{"id": "T01", "titulo": "t", "instruccion": "i"}]}).encode("utf-8"))
+    obj, tareas = ag.cargar_plan(P)
+    assert obj == "o" and tareas[0].id == "T01"

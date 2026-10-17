@@ -16,7 +16,7 @@ from watchdog.observers import Observer
 
 from .config import EXTENSIONES_MAPA as EXTENSIONES
 from .config import NOMBRE_MAPA as ARCHIVO_MAPA
-from .mapa import PARSERS, clave, es_relevante, escanear_todo, extraer_archivo, guardar_mapa, vincular_imports
+from .mapa import PARSERS, clave, es_relevante, escanear_todo, extraer_archivo, guardar_mapa
 
 
 class MapaHandler(FileSystemEventHandler):
@@ -53,9 +53,6 @@ class MapaHandler(FileSystemEventHandler):
             elif self.archivos.pop(k, None) is not None:
                 print(f"[Watch] 🗑️  {k}")
                 
-        # FASE 4.5: Recalculamos los links rápidamente por si cambió un import
-        vincular_imports(self.archivos)
-        
         guardar_mapa(self.archivos, self.raiz)
         print(f"        Mapa actualizado ({len(self.archivos)} archivos).")
 

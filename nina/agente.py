@@ -64,7 +64,7 @@ def cargar_plan(proyecto: Proyecto):
     f = carpeta_estado(proyecto) / "plan.json"
     if not f.is_file():
         return "", []
-    datos = json.loads(f.read_text(encoding="utf-8"))
+    datos = json.loads(f.read_text(encoding="utf-8-sig"))      # tolera el BOM que agrega PowerShell/Notepad al editarlo a mano
     return datos.get("objetivo", ""), [Tarea(**t) for t in datos.get("tareas", [])]
 
 
@@ -80,7 +80,7 @@ PROMPT_PLAN = """Sos el planificador de un sistema de desarrollo automático. Di
 verificables (cada una toca pocos archivos y puede comprobarse con un comando).
 Respondé SOLO con un JSON, sin texto alrededor, con esta forma:
 {"tareas": [{"titulo": "...", "instruccion": "qué crear o modificar, con rutas de archivo", "archivos": ["ruta/a.py"], "verificacion": ["python -m pytest -q"]}]}
-Usá `python` (nunca `python3`). Cada verificación debe poder pasar al terminar ESA tarea (no dependas de archivos de tareas posteriores). Preferí pytest sobre archivos concretos. En `python -c` no uses `try:`, `for` ni otras sentencias compuestas (una sola línea con `;` no las admite): para eso escribí una prueba pytest.
+Usá `python` (nunca `python3`). Cada verificación debe poder pasar al terminar ESA tarea (no dependas de archivos de tareas posteriores). Preferí pytest sobre archivos concretos. REGLA: cada tarea que crea o cambia código debe crear en esa misma tarea la prueba que la verifica; nunca dejes las pruebas para una tarea posterior (pytest sin pruebas no verifica nada). En `python -c` no uses `try:`, `for` ni otras sentencias compuestas (una sola línea con `;` no las admite): para eso escribí una prueba pytest.
 Comandos de verificación permitidos: %s. Máximo %d tareas.
 
 OBJETIVO:
@@ -198,10 +198,17 @@ def ejecutar_tarea(proyecto: Proyecto, t: Tarea, llamar, pres: Presupuesto, perm
                 proyecto.actualizar_archivo_en_mapa(k)
             except Exception:
                 pass
-        fallos, omitidas = [], 0
+        fallos, omitidas, sin_pruebas = [], 0, False
         for cmd in t.verificacion:
             r = ejecutor.ejecutar(proyecto.raiz, cmd, permitidos, pres.timeout_comando)
             ev("verificacion", id=t.id, comando=cmd, codigo=r.codigo)
+            if r.sin_pruebas:
+                # Pasó en la prueba real: la tarea 1 solo escribía código, las pruebas eran de la tarea 2, y el agente gastó
+                # 4 intentos (7 min) reparando algo que no estaba roto. No se reintenta; queda advertido en la tarea.
+                omitidas += 1
+                sin_pruebas = True
+                ev("verificacion_sin_pruebas", id=t.id, comando=cmd)
+                continue
             if not r.ok and verificacion_invalida(cmd, r.salida):
                 # El fallo es del comando que escribió el planificador (p. ej. `try:` en una línea de -c), no del código:
                 # reparar el código no lo arregla. Se omite y se deja constancia en la tarea.
@@ -214,7 +221,8 @@ def ejecutar_tarea(proyecto: Proyecto, t: Tarea, llamar, pres: Presupuesto, perm
         if not fallos:
             t.estado, t.detalle = HECHA, f"{len(escritos)} archivo(s), {intento} intento(s)"
             if omitidas:
-                t.detalle += f" · ⚠ {omitidas} verificación(es) omitida(s) por comando inválido"
+                t.detalle += (" · ⚠ pytest no encontró pruebas (la tarea no quedó verificada)" if sin_pruebas
+                              else f" · ⚠ {omitidas} verificación(es) omitida(s) por comando inválido")
             gitutil.checkpoint(proyecto.raiz, f"nina: {t.id} {t.titulo}")
             return True
         fallo = fallos[0]

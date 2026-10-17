@@ -2,6 +2,13 @@
 
 Cambios sobre `feature/fase-4` (commit a564866 "QoL"). Todo el código está cubierto por `pytest` (134 pruebas, 1 xfail conocido).
 
+## 2.5.4 — 2026-10-16
+- `plan.json` editado a mano con BOM (PowerShell, Notepad) ya se lee.
+
+## 2.5.3 — 2026-10-16
+- **Agente:** `pytest` con código 5 (sin pruebas) ya no cuenta como fallo ni dispara reparaciones: en la prueba real el plan separaba código (T01) y pruebas (T02), y el agente gastó 4 intentos (~7 min) hasta que el modelo, por su cuenta, escribió un test. Ahora la tarea pasa con la advertencia `pytest no encontró pruebas` en `detalle` y el evento `verificacion_sin_pruebas`. El planificador recibe la regla de crear el test en la misma tarea que el código.
+- Primera corrida real del lazo de reparación (Qwen3.6-35B-A3B): funcionó, con la verificación real (los códigos 5 prueban que ya no pasa en vacío).
+
 ## 2.5.2 — 2026-10-16
 - **CRÍTICO (Windows): las verificaciones del agente pasaban en vacío.** `shlex` no-POSIX conserva las comillas, así que `python -c "..."` le llegaba a Python con comillas literales (un string suelto: no ejecuta nada y sale con 0). Ahora `ejecutor.dividir_comando` las quita. Las tareas T01–T03 de tu primera corrida con éxito **no estaban realmente verificadas**: volver a correrlas.
 - **Agente:** si el `python -c` del plan tiene un `SyntaxError` propio (p. ej. `try:` en una línea), se omite esa verificación y queda anotado en `detalle` y en los eventos (reparar el código no lo arregla); el planificador recibe la instrucción de no usar sentencias compuestas en `-c`.
