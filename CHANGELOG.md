@@ -2,6 +2,26 @@
 
 Cambios sobre `feature/fase-4` (commit a564866 "QoL"). Todo el código está cubierto por `pytest` (134 pruebas, 1 xfail conocido).
 
+## 2.6.1 — 2026-10-17
+- **Validado con el modelo real:** app de 3 módulos (modelos, almacén, CLI) con aceptación en 4 comandos: las 4 pasaron (`aceptacion_ok`) y `python cli.py listar` muestra `1. [x] Aprender pytest`. Falta ver con el modelo real la ruta de *reparación* de la aceptación (`A01`).
+- **El agente ahora puede crear archivos de proyecto** (`.json .md .txt .toml .cfg .ini .yml .yaml`, `Dockerfile`, `.gitignore`): sin esto no podía crear `requirements.txt` ni `package.json`; en la prueba real una escritura fue rechazada («Extensión no permitida ()») y costó ~3 min. Siguen prohibidos los scripts (`.sh .bat .ps1`), `.env`, `.ai_map.json` y `.nina/`. Web y CLI conservan la lista estricta de siempre.
+- El mensaje de ruta rechazada ahora dice cuál era la ruta.
+- 152 passed, 1 xfailed.
+
+## 2.6.0 — 2026-10-17 (a partir de las pruebas reales de revert y de varios archivos)
+- **Aceptación a nivel objetivo (nueva):** `plan.json` admite `aceptacion: [{comando, espera}]`; al terminar las tareas se corren en orden y, si fallan, se generan tareas de reparación `A01…` (`Presupuesto.rondas_aceptacion`, 2). El planificador las propone; se pueden escribir a mano. Resultado nuevo del agente: `aceptacion_fallida`. Motivo: en la prueba real todas las pruebas por tarea pasaron y el `cli.py` no hacía nada.
+- **Cada tarea recibe el objetivo general** (y la orden de no dejar esqueletos). El planificador había recortado "usando almacen.py" y "sin ejecutar la lógica completa".
+- **Bug corregido:** el revert borraba el registro de eventos del intento fallido (si `.nina/` aún no tenía `.gitignore`, `eventos.jsonl` entraba en el checkpoint y `git reset --hard` lo devolvía atrás). `preparar_estado()` crea el `.gitignore` y saca el log del índice antes del primer checkpoint.
+- `Tarea.esperas` (comando → texto esperado en la salida). `gitutil.dejar_de_seguir`.
+- Pruebas: 150 passed, 1 xfailed (incluye una que reproduce el bug de eventos).
+
+## 2.5.4 — 2026-10-16
+- `plan.json` editado a mano con BOM (PowerShell, Notepad) ya se lee.
+
+## 2.5.3 — 2026-10-16
+- **Agente:** `pytest` con código 5 (sin pruebas) ya no cuenta como fallo ni dispara reparaciones: en la prueba real el plan separaba código (T01) y pruebas (T02), y el agente gastó 4 intentos (~7 min) hasta que el modelo, por su cuenta, escribió un test. Ahora la tarea pasa con la advertencia `pytest no encontró pruebas` en `detalle` y el evento `verificacion_sin_pruebas`. El planificador recibe la regla de crear el test en la misma tarea que el código.
+- Primera corrida real del lazo de reparación (Qwen3.6-35B-A3B): funcionó, con la verificación real (los códigos 5 prueban que ya no pasa en vacío).
+
 ## 2.5.2 — 2026-10-16
 - **CRÍTICO (Windows): las verificaciones del agente pasaban en vacío.** `shlex` no-POSIX conserva las comillas, así que `python -c "..."` le llegaba a Python con comillas literales (un string suelto: no ejecuta nada y sale con 0). Ahora `ejecutor.dividir_comando` las quita. Las tareas T01–T03 de tu primera corrida con éxito **no estaban realmente verificadas**: volver a correrlas.
 - **Agente:** si el `python -c` del plan tiene un `SyntaxError` propio (p. ej. `try:` en una línea), se omite esa verificación y queda anotado en `detalle` y en los eventos (reparar el código no lo arregla); el planificador recibe la instrucción de no usar sentencias compuestas en `-c`.

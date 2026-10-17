@@ -345,12 +345,12 @@ def agente(
             raise typer.Exit(1)
         console.print("[bold cyan]Planificando…[/bold cyan]")
         try:
-            tareas = ag.planificar(objetivo, llamar_llm)
+            tareas, aceptacion = ag.planificar_con_aceptacion(objetivo, llamar_llm)
         except (ValueError, ErrorLLM) as e:
             console.print(f"[bold red]✗ {escape(str(e))}[/bold red]")
             raise typer.Exit(1)
         obj = objetivo
-        ag.guardar_plan(p, obj, tareas)
+        ag.guardar_plan(p, obj, tareas, aceptacion)
     for t in tareas:
         console.print(f"  [{t.estado}] {t.id} {escape(t.titulo)}  [dim]{escape(' | '.join(t.verificacion) or 'sin verificación')}[/dim]")
     if solo_planificar:
@@ -359,6 +359,7 @@ def agente(
     if not gitutil.inicializar(p.raiz):
         console.print("[bold red]Hace falta git para poder revertir tareas fallidas.[/bold red]")
         raise typer.Exit(1)
+    ag.preparar_estado(p)          # antes del primer checkpoint: así .nina/eventos.jsonl nunca entra en un commit
     gitutil.checkpoint(p.raiz, "nina: estado inicial del agente")
     res = ag.ejecutar_plan(
         p, tareas, llamar_llm, ag.Presupuesto(reparaciones_por_tarea=reparaciones, segundos_totales=int(horas * 3600)),

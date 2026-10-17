@@ -28,6 +28,11 @@ class Resultado:
     segundos_agotado: bool = False
 
     @property
+    def sin_pruebas(self) -> bool:
+        """pytest terminó con 5: no encontró ninguna prueba. No es un error del código sino que todavía no hay pruebas."""
+        return self.codigo == 5 and "pytest" in self.comando
+
+    @property
     def ok(self) -> bool:
         return self.codigo == 0 and not self.segundos_agotado
 

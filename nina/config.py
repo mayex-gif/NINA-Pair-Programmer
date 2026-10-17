@@ -9,12 +9,16 @@ from pathlib import Path
 # --- Archivos del proyecto -------------------------------------------------- #
 EXTENSIONES_MAPA = ('.java', '.ts', '.tsx', '.js', '.jsx', '.py', '.html')
 EXTENSIONES_EDITABLES = EXTENSIONES_MAPA + ('.css',)
+# Lo que el AGENTE puede crear además del código: archivos de configuración y documentación de un proyecto.
+# Nunca scripts ejecutables (.sh, .bat, .ps1, .exe) ni secretos (.env).
+EXTENSIONES_AGENTE = ('.json', '.md', '.txt', '.toml', '.cfg', '.ini', '.yml', '.yaml')
+NOMBRES_AGENTE = ('Dockerfile', '.gitignore')
 IGNORE_DIRS = {
-    '.git', 'node_modules', 'target', '.next', 'dist', 'build', 'out', 'coverage',
+    '.git', '.nina', 'node_modules', 'target', '.next', 'dist', 'build', 'out', 'coverage',
     '.idea', '.vscode', '__pycache__', '.ai_backups',
     'venv', '.venv', 'site-packages', '.pytest_cache', '.mypy_cache', '.tox',
 }
-NOMBRE_MAPA = ".ai_map.json"
+NOMBRE_MAPA = ".ai_map.json"   # (el agente tampoco puede escribirlo)
 NOMBRE_CONVENCIONES = "CONVENTIONS.md"
 NOMBRE_BACKUPS = ".ai_backups"
 VERSION_MAPA = 3
@@ -72,20 +76,20 @@ CONFIG_DIR = Path.home() / ".nina"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 MUESTREO_DEFECTO = {
-    "temperature": 0.6,       # con modelos de razonamiento evitá valores muy bajos (0.0-0.1): favorecen los bucles
+    "temperature": 0.3,       # con modelos de razonamiento evitá valores muy bajos (0.0-0.1): favorecen los bucles
     "top_p": 0.95,
     "top_k": 20,
-    "min_p": 0.05,
-    "repeat_penalty": 1.05,    # >1.0 castiga repetir tokens del contexto, y el código es repetitivo: puede comerse espacios
+    "min_p": 0.0,
+    "repeat_penalty": 1.0,    # >1.0 castiga repetir tokens del contexto, y el código es repetitivo: puede comerse espacios
                               # ("returntotal(x)") o desviar un SEARCH. Para bucles ya están las guardas de `limites`.
     "presence_penalty": 0.0,
 }
 
 LIMITES_DEFECTO = {
-    "max_tokens_salida": 131072,                 # tope duro por intento (se manda como max_tokens); 0 = sin tope
-    "max_tokens_pensamiento": 32768,            # si el razonamiento pasa de esto (estimado), se corta el intento; 0 = sin tope
+    "max_tokens_salida": 32768,                 # tope duro por intento (se manda como max_tokens); 0 = sin tope
+    "max_tokens_pensamiento": 12000,            # si el razonamiento pasa de esto (estimado), se corta el intento; 0 = sin tope
     "detectar_bucles": True,                    # corta el intento si el razonamiento repite las mismas líneas
-    "reenviar_respuesta_hasta_tokens": 65536,   # en un reintento, la respuesta rechazada solo se reenvía si pesa menos que esto
+    "reenviar_respuesta_hasta_tokens": 64000,   # en un reintento, la respuesta rechazada solo se reenvía si pesa menos que esto
     "profundidad_mapa": 2,                      # saltos de import (en ambos sentidos) alrededor del archivo pedido que entran al mapa; 0 = todo
 }
 
@@ -102,7 +106,7 @@ SERVIDOR_DEFECTO = {
     "n_cpu_moe": 34,              # --n-cpu-moe (solo MoE; None para no usarlo). Bajarlo de a 2 hasta ~7 GB de VRAM
     "load_mode": "none",          # --load-mode (None para no usarlo)
     "reasoning_preserve": False,  # False → --no-reasoning-preserve
-    "extra": ["--no-mmproj"],     # flags adicionales tal cual, p. ej. ["--cache-reuse", "256"]
+    "extra": [],                  # flags adicionales tal cual, p. ej. ["--cache-reuse", "256"]
 }
 
 DEFAULT_CONFIG = {
@@ -112,7 +116,7 @@ DEFAULT_CONFIG = {
             "tipo": "ollama",
             "url": "http://localhost:11434/v1/chat/completions",
             "modelo": "qwen2.5-coder:7b",
-            "max_tokens_prompt": 32768,
+            "max_tokens_prompt": 12000,
             "muestreo": {**MUESTREO_DEFECTO, "temperature": 0.1},
             "limites": dict(LIMITES_DEFECTO),
         },
@@ -120,7 +124,7 @@ DEFAULT_CONFIG = {
             "tipo": "llama.cpp",
             "url": "http://localhost:8081/v1/chat/completions",
             "modelo": "Qwen3.6-35B-A3B-UD-Q4_K_XL",
-            "max_tokens_prompt": 32768,
+            "max_tokens_prompt": 12000,
             "muestreo": dict(MUESTREO_DEFECTO),
             "limites": dict(LIMITES_DEFECTO),
             "servidor": dict(SERVIDOR_DEFECTO),

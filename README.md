@@ -1,4 +1,4 @@
-# NINA — Documentación y Roadmap v2.5 🚀
+# NINA — Documentación y Roadmap v2.6.1 🚀
 
 **Filosofía:** herramienta de *coworking* (pair programming) 100 % local y stateless. Maximiza la velocidad de inferencia y protege la caché en hardware con poca VRAM (RTX 4060 de 8 GB), dándole a la IA el contexto justo del proyecto sin arrastrar historiales de chat.
 
@@ -33,11 +33,11 @@ python -m nina refactor ...         # equivalente a frontend.py (el paquete nina
 python frontend.py servidor            # imprime el comando de llama-server generado desde tu perfil (config.py)
 python frontend.py servidor --bat servidor.bat   # o escribe un .bat equivalente; --ejecutar lo lanza en primer plano
 python probar_reintento.py             # prueba real del auto-healing: arruina a propósito el intento 1 (ver abajo)
-pytest -q                            # esperado: 113 passed, 1 xfailed
+pytest -q                            # esperado: 152 passed, 1 xfailed (sin modelo ni servidor; el agente se prueba con un LLM falso y git real)
 ```
 
 **Configuración: una sola fuente de verdad (`nina/config.py` → `~/.nina/config.json`)**
-Cada perfil tiene tres secciones y lo que cambies en la interfaz web se guarda en `~/.nina/config.json` (pisa los valores por defecto de `config.py`, clave por clave):
+Cada perfil tiene tres secciones. Se editan en `~/.nina/config.json` (la web **no** las modifica), que pisa los valores por defecto de `config.py` clave por clave:
 
 | Sección | Qué controla |
 |---|---|
@@ -45,7 +45,7 @@ Cada perfil tiene tres secciones y lo que cambies en la interfaz web se guarda e
 | `limites` | `max_tokens_salida`, `max_tokens_pensamiento`, `detectar_bucles`, `reenviar_respuesta_hasta_tokens` (4.6) y `profundidad_mapa` (cuántos saltos de import alrededor del archivo entran al mapa; 0 = todo). |
 | `servidor` | Cómo se lanza `llama-server` (ejecutable, GGUF, contexto, `--n-cpu-moe`, caché K/V…). `python frontend.py servidor --bat servidor.bat` genera el `.bat` **desde acá**, con el mismo muestreo y el puerto tomado de la `url`: el `.bat` deja de mantenerse a mano y no puede quedar descoordinado. |
 
-Una config guardada por una versión vieja se completa sola con los valores nuevos (`completar_config`); la clave vieja `temperatura` se ignora. Las variables de entorno (`AI_PERFIL`, `AI_API_URL`, `AI_MODELO`) siguen funcionando como valores por defecto si no hay configuración previa. ⚠️ Las API Keys se guardan en texto plano (ver deuda técnica).
+Más abajo, en *Config: qué manda*, el detalle de por qué un cambio en `config.py` puede no verse. Una config guardada por una versión vieja se completa sola con los valores nuevos (`completar_config`); la clave vieja `temperatura` se ignora. Las variables de entorno (`AI_PERFIL`, `AI_API_URL`, `AI_MODELO`) siguen funcionando como valores por defecto si no hay configuración previa. ⚠️ Las API Keys se guardan en texto plano (ver deuda técnica).
 
 **`.gitignore` recomendado:** `.ai_map.json` y `.ai_backups/` (la carpeta de backups ya incluye su propio `.gitignore`).
 
@@ -69,7 +69,7 @@ llama-server.exe -m "%MODEL_PATH%" -np 1 -fa on -c 65536 -ctk q8_0 -ctv q8_0 ^
 
 | **Archivo** | **Rol** | 
 |---|---|
-| `nina/agente.py`, `nina/ejecutor.py`, `nina/gitutil.py` | Fase 6 y 4.4: lazo del agente, ejecutor con lista blanca y checkpoints Git |
+| `nina/agente.py`, `nina/ejecutor.py`, `nina/gitutil.py` | Fase 6 y 4.4: planificador y lazo del agente, ejecutor de comandos con lista blanca (sin shell) y checkpoints Git. Ver *El agente* |
 | `nina/recomendaciones.py` | Fases 5.4 y 5.7: consejos del sidebar y resumen de impactos |
 | `generar_mapa.py`, `frontend.py` | Entradas de compatibilidad (3 líneas): delegan en `nina.vigia` y `nina.cli`. Los comandos de siempre siguen funcionando. | 
 | `web.py` | Interfaz Streamlit (solo presentación). Conectada al `gestor_config` y al motor multi-archivo. | 
@@ -85,7 +85,7 @@ llama-server.exe -m "%MODEL_PATH%" -np 1 -fa on -c 65536 -ctk q8_0 -ctv q8_0 ^
 | `nina/mapa.py` | Extractores del mapa v3: firmas, imports, atributos, endpoints, componentes, hooks… (tree-sitter + regex). | 
 | `nina/vigia.py` | Watcher incremental (watchdog). | 
 | `nina/cli.py` | CLI (typer + rich). | 
-| `tests/` | Suite de pruebas unitarias y de integración (113 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
+| `tests/` | Suite de pruebas unitarias y de integración (152 tests; la web se prueba con un Streamlit simulado en `fake_streamlit.py`). | 
 
 **Regla de capas:** el núcleo (todo `nina/` salvo `cli.py` y `vigia.py`) no importa `typer`, `rich`, `streamlit` ni `watchdog`; un test lo vigila.
 
@@ -132,6 +132,29 @@ Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.st
 * Restauración transaccional (Deshacer Lote), disponible también en Modo Global.
 * Fusión a tres vías al guardar si el archivo cambió en disco mientras la IA generaba.
 
+## 🤖 El agente (Fase 6, v1)
+
+```
+python frontend.py agente "Creá una API con /health y su prueba" -C D:\mi_proyecto --solo-planificar   # 1) solo el plan
+python frontend.py agente -C D:\mi_proyecto                                                            # 2) ejecuta el plan guardado (reanuda)
+```
+
+1. **Planifica:** el modelo devuelve un JSON de tareas chicas (`titulo`, `instruccion`, `archivos`, `verificacion`) que se guarda en `.nina/plan.json`. Podés editarlo a mano antes de ejecutar.
+2. **Aceptación (el objetivo, no solo las tareas):** el plan puede traer `aceptacion`: comandos que corren **en orden al final** sobre el proyecto terminado, con `espera` (texto que debe aparecer en la salida). Si fallan, el agente crea tareas de reparación (`A01`, `A02`…, hasta 2 rondas) con la salida del fallo. El planificador las propone, pero **lo ideal es que las escribas vos** en `.nina/plan.json`: son tu contrato de qué significa "terminado". Ejemplo: `"aceptacion": [{"comando": "python cli.py agregar pan"}, {"comando": "python cli.py listar", "espera": "pan"}]`.
+3. **Por tarea:** checkpoint Git → prompt nuevo (stateless) con convenciones, mapa y **los archivos de la tarea completos** → bloques SEARCH/REPLACE → escritura con backup (`validar_ruta_segura`: nada fuera del proyecto) → verificación.
+4. **Verificación:** cada comando corre por `nina/ejecutor.py`: lista blanca (`python`, `pytest`, `npm`, `node`, `mvn`, `git` sin `push`/`reset`/`clean`…), **sin shell** (no hay `&&`, pipes ni redirecciones), con timeout y salida recortada. `python`/`python3` se ejecutan con el intérprete que corre NINA. Si falla, la salida se manda al modelo para reparar (`--reparaciones`, 3 por defecto); si no se logra, `git reset --hard` al checkpoint y la tarea queda `fallida`.
+5. **Frenos:** se detiene tras 2 tareas fallidas seguidas o al agotar `--horas` (4). Lo hecho no se repite al reanudar.
+6. **Registro:** `.nina/plan.json` (estado por tarea), `.nina/eventos.jsonl` (cada paso con hora) y los commits `nina: antes de Txx …` / `nina: Txx …` en `git log`. La carpeta `.nina` está oculta para la vista de archivos de algunos editores: usá `dir .nina -Force`.
+
+**Límites conocidos (honestos):**
+* Si `pytest` no encuentra pruebas (código 5), la tarea pasa pero queda marcada `⚠ pytest no encontró pruebas`: no estaba verificada. (En la prueba real, el plan dejó las pruebas para la tarea siguiente y el agente reparó en vano 3 veces antes de que el modelo escribiera un test por su cuenta.)
+* La verificación es tan buena como el comando que escribe el planificador. Si el `python -c` del plan tiene un `SyntaxError` propio, se **omite** y queda anotado en `detalle` (`⚠ verificación omitida`). Y si el mismo modelo escribe el código y sus pruebas, que pasen no garantiza que estén bien: conviene leerlas.
+* Windows: el comillado de `python -c "…"` se resuelve en `ejecutor.dividir_comando` (un bug de esto hizo que las verificaciones pasaran en vacío en la v2.5/2.5.1; corregido en la 2.5.2).
+* **Qué puede escribir el agente:** código (`.py .js .ts .java .html .css…`) y archivos de proyecto (`.json .md .txt .toml .cfg .ini .yml .yaml`, `Dockerfile`, `.gitignore`). Nunca scripts ejecutables, `.env`, `.ai_map.json` ni `.nina/`.
+* Probado con Qwen3.6-35B-A3B real: calculadora (2 tareas), reparación por verificación fallida, **revert** de una tarea imposible (el archivo desaparece y el árbol vuelve al checkpoint) y una app de 3 módulos con pruebas y aceptación de 4 comandos (la aceptación pasó completa; ~11 min en total). En esa última, el planificador debilitó la tarea del CLI ("sin ejecutar la lógica") y el `cli.py` resultante **no hacía nada** aunque las 12 pruebas pasaban: de ahí la aceptación a nivel objetivo y que cada tarea reciba el objetivo general.
+* Falta: replanificación cuando una tarea cambia el plan, replanificación cuando una tarea cambia el plan, descubrir el comando de test del proyecto, planificador y ejecutor con modelos distintos, y probarlo en un proyecto de varios archivos.
+* Probalo siempre primero en una carpeta aparte: hace commits y `reset --hard` dentro del proyecto indicado.
+
 ## ✅ Estado de implementación
 
 **Hecho y funcionando**
@@ -148,7 +171,7 @@ Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.st
 * **Fase 5.2 (parcial):** el contador suma el contexto real y se calibra con el servidor; `servidor.contexto_del_servidor(url)` lee `n_ctx` de `/props`. Falta mostrarlo como barra en la web.
 * **Fase 5.4 (hecha):** tiempos/tokens separados, métricas por intento, vista de archivo nuevo, copiar código y la lista de impactos del lote.
 * **Fase 5.7 (hecha, `nina/recomendaciones.py`):** el sidebar sugiere crear `CONVENTIONS.md`, generar/regenerar el mapa y ajustar el tope de prompt.
-* **Fase 6 (primera versión, `nina/agente.py` + `nina/ejecutor.py`):** `frontend.py agente "objetivo"` planifica en tareas (`.nina/plan.json`), ejecuta cada una con checkpoint Git, verifica con comandos de una lista blanca (sin shell, con timeout), repara con la salida del fallo, revierte la tarea si no lo logra y se detiene tras N fallos seguidos o al agotar el tiempo. Es reanudable y deja un registro en `.nina/eventos.jsonl`. **Probado con LLM simulado y git real; todavía no con Qwen real ni en un proyecto grande.**
+* **Fase 6 (v1, `nina/agente.py` + `nina/ejecutor.py`):** ver la sección *El agente*. **Validado con Qwen3.6-35B-A3B real en un caso chico** (calculadora + pruebas: 2 tareas, ~1 min cada una, `pytest` con código 0 en ambas); el lazo de reparación y el revert con el modelo real **todavía no** se vieron, solo con un LLM falso.
 * **Fase 5.5:** el Vigía en segundo plano (`iniciar_vigia_background`, tuyo) mantiene el mapa al día; falta que la web se redibuje sola ante un cambio externo.
 * **Fase 5.3 (datos listos):** el mapa v3 ya trae atributos, endpoints, props y hooks; falta la interfaz de árbol y que `RepomapGraph.jsx` los muestre.
 
@@ -160,11 +183,13 @@ Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.st
 4. **Por verificar:** que Ollama respete `options.num_ctx` por `/v1`; en ese caso el driver podría no estar limitando el contexto.
 5. ~~Reintentos caros.~~ Atenuado en la 4.6 (la respuesta grande ya no se reenvía y tras un corte se reintenta sin razonar). Primera prueba real (Qwen3.6-35B-A3B, crear un `page.tsx` de ~480 líneas): el intento 1 fue rechazado tras 368 s (8.2k tokens de salida) y el intento 2 tardó 658 s (14.7k tokens, de los cuales ~323 s fueron razonamiento). Total: 1025 s y 22.9k tokens para un archivo. Un reintento reenvía entero el intento rechazado (la entrada pasó de 1.3k a 8.6k tokens). Las estadísticas de `llama-server` llegan exactas (tokens de entrada y salida, t/s) y el razonamiento llega por `reasoning_content`.
 6. **Falsos positivos del aviso de sintaxis.** tree-sitter-tsx marca error ante un `&` suelto en texto JSX (`<h2>A & B</h2>`), que TypeScript acepta. El aviso ahora indica la línea y aclara que puede ser un falso positivo; sigue siendo orientativo.
-7. ~~Temperatura enviada por NINA.~~ Ahora es `muestreo.temperature` (0.3 por defecto, editable en la interfaz) y es la que manda; el `--temp` del `.bat` solo vale como valor por defecto del servidor.
+7. ~~Temperatura enviada por NINA.~~ Ahora es `muestreo.temperature` (0.3 por defecto en `config.py`; se edita en `config.json`) y es la que manda; el `--temp` del `.bat` solo vale como valor por defecto del servidor.
 8. **Errores de reintento:** `generar_cambio` informa `{ruta: [errores]}` a `on_reintento`; la web y el CLI mostraban solo la ruta (corregido).
 9. **NINA no detecta errores semánticos.** En una prueba real el modelo escribió `returntotal(items)` y NINA lo dio por válido: es una expresión Python sintácticamente correcta (tree-sitter no se queja) y el SEARCH coincidía. Idea para más adelante: un lint opcional (p. ej. `pyflakes`) sobre los archivos propuestos, o la auto-verificación de la Fase 6.
 10. **Mapa v2 viejo.** Un `.ai_map.json` generado antes de esta versión no trae atributos/endpoints/hooks: volver a correr `python generar_mapa.py --una-vez` (el Vigía lo va completando archivo por archivo a medida que se guardan).
-11. **Límite de la vecindad.** Con `profundidad_mapa` = 2, una dependencia a 3 saltos que la instrucción no nombra no llega a la IA. Se puede subir en la barra lateral (o poner 0 para mandar todo) y sigue valiendo mencionar el archivo en la instrucción.
+11. **Límite de la vecindad.** Con `profundidad_mapa` = 2, una dependencia a 3 saltos que la instrucción no nombra no llega a la IA. Se puede subir en `limites.profundidad_mapa` de `config.json` (o poner 0 para mandar todo) y sigue valiendo mencionar el archivo en la instrucción.
+12. **Calidad de la verificación del agente** (ver *El agente*): comandos inválidos del planificador, pruebas escritas por el mismo modelo.
+13. **Detector de bucles ajustado con un caso real.** Con 5 repeticiones/20 caracteres marcó como bucle un razonamiento que citaba `def promedio(items):` varias veces mientras armaba el bloque; ahora 10 repeticiones y 30+ caracteres.
 
 ---
 
@@ -208,8 +233,7 @@ Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.st
 
 **Hecho (v1):** planificador → tareas → ejecutor con checkpoints → verificación → reparación → registro de eventos (ver Estado). **Falta para "Zero-to-Hero":** archivo de especificación/contrato del producto, planificador con un modelo más chico (9B) y ejecutor 35B-A3B en secuencia, descubrimiento automático del comando de test del proyecto, tareas que dependen unas de otras con replanificación, consola en la UI, y pruebas largas reales.
 
-
-* **Auto-verificación de Código:** El sistema corre comandos locales (`npm run lint`, `pytest`) tras generar cambios y auto-corrige los fallos detectados sin intervención humana.
+* **Auto-verificación de Código:** hecha en la v1 (corre `pytest`/`npm test`/etc. tras generar cambios y repara con la salida). Falta ampliarla a más lenguajes y a comandos de lint.
 * **Consola Integrada:** Capacidad de escribir y ejecutar código o comandos bash en una consola propia dentro de la interfaz.
 * **Checklists para Procesos Largos:** Fragmentación de planes grandes en tareas atómicas. Literalmente dejar al sistema programando solo, resolviendo una checklist paso a paso.
 * **Pruebas "Zero-to-Hero":** Validar la capacidad de NINA para crear y armar un proyecto completo y funcional desde la más absoluta nada.
@@ -233,12 +257,13 @@ Cada ejecución arranca de cero. Los intentos tienen guardas (Fase 4.6): `llm.st
 
 * Es una mitigación blanda: un modelo en modo razonamiento no siempre obedece instrucciones sobre su propio razonamiento. Conviene medir su efecto (longitud del razonamiento y cantidad de bucles con y sin las reglas) y no darlas por buenas sin esa comparación.
 * Pendiente de decidir: pedir que el razonamiento empiece con una posible respuesta y que las verificaciones se hagan todas juntas.
-* Para medirlo está `probar_reintento.py` (junto a `frontend.py`): crea un proyecto temporal, arruina a propósito el SEARCH del intento 1 y muestra, por intento, el razonamiento, la respuesta, los mensajes enviados y las estadísticas. Se corre con `python probar_reintento.py` o `python probar_reintento.py "otra instrucción"`; el resultado esperado es `es_valida=True · intentos=2`.
+* Para medirlo está `probar_reintento.py` (junto a `frontend.py`): crea un proyecto temporal, arruina a propósito el SEARCH del intento 1 y muestra, por intento, el razonamiento, la respuesta, los mensajes enviados y las estadísticas. Se corre con `python probar_reintento.py` o `python probar_reintento.py "otra instrucción"`; el resultado esperado es `es_valida=True · intentos=2` (3 si el intento 2 se corta por bucle y el 3.º va sin razonamiento; también es un resultado correcto).
 
 ## 📝 Notas de trabajo (de la versión anterior)
 
 * ~~Al cambiar de archivo, que funcione como descartar/limpiar vista.~~ Hecho.
 * ~~Si necesita reintentar varias veces, dividir las métricas según cada intento.~~ Hecho.
 * Razonamiento: primero una posible respuesta y verificaciones todas juntas → ver *Reglas de razonamiento*.
+* Historial detallado de cambios: `CHANGELOG.md`.
 * Visualizar HTML → Fase 5.6.
 * Recomendaciones en el sidebar → Fase 5.7.
